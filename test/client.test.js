@@ -878,10 +878,10 @@ const stubHit = (win, elements, axis = 'y', step = 40, size = 36) => {
 };
 /* pointer events are captured on document, so they must be dispatched at a real
    target inside it: dispatching straight at document skips the capture path. */
-const pointer = (win, type, target, x, y) => {
+const pointer = (win, type, target, x, y, pointerType = 'mouse') => {
   const ev = new win.MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
   Object.defineProperty(ev, 'pointerId', { value: 1 });
-  Object.defineProperty(ev, 'pointerType', { value: 'mouse' });
+  Object.defineProperty(ev, 'pointerType', { value: pointerType });
   Object.defineProperty(ev, 'button', { value: 0 });
   target.dispatchEvent(ev);
   return ev;
@@ -1199,5 +1199,192 @@ test('the gear is the only button: no apply/cancel bar exists', () => {
   assert.equal(doc.querySelector('.snc-cancel'), null, 'no cancel button appears while editing');
   /* the gear flips to a check mark, which is what says "press me again to save" */
   assert.equal(gear(doc).hasAttribute('data-snc-dirty') ? gear(doc).dataset.sncDirty : 'false', 'false');
+  dispose();
+});
+
+/* ------------------------ edit mode owns the whole row ------------------------
+   The 16px box used to be the only toggle, and a press a few pixels off fell
+   through to the host <button>: it selected the panel / switched the view (a
+   full re-render of the centre area) while the box never moved. While editing,
+   the whole row is the target -- a click toggles, a drag reorders -- and the two
+   gestures must never swallow each other. */
+test('while editing, a click anywhere on a row toggles it instead of selecting the panel', () => {
+  const { doc, dom, dispose } = start();
+  gear(doc).click();
+  const row = rows(doc).find((r) => r.getAttribute('aria-label') === '任务看板');
+  let selected = 0;
+  row.addEventListener('click', () => { selected += 1; });
+  const label = row.querySelector('[class*="panelTitle"]');
+  /* the label, not the box: this is the near miss that used to reach the host */
+  label.click();
+  assert.equal(selected, 0, 'the host must not see the press, or it would select the panel');
+  assert.equal(row.dataset.sncHidden, 'true', 'the press toggled the entry');
+  assert.deepEqual(stateOf(dom.window).hidden, ['任务看板'], 'and it saved like every other toggle');
+  label.click();
+  assert.equal(row.hasAttribute('data-snc-hidden'), false, 'a second press brings it back');
+  assert.deepEqual(stateOf(dom.window).hidden, []);
+  dispose();
+});
+
+test('while editing, a click on a view tab toggles the view instead of switching it', () => {
+  /* 上下页 is the view on screen, so the active-view guard is exercised */
+  const { doc, dom, dispose } = start(both(undefined, 1));
+  gear(doc).click();
+  const gallery = tabByLabel(doc, '画廊');
+  let switched = 0;
+  gallery.addEventListener('click', () => { switched += 1; });
+  gallery.click();
+  assert.equal(switched, 0, 'the host tab must not see the press, or it would switch view');
+  assert.equal(gallery.dataset.sncHidden, 'true');
+  assert.deepEqual(stateOf(dom.window).views, ['画廊']);
+
+  /* paint() puts both refused tabs back inside the same click, so asserting
+     "still visible" would pass even with the guards deleted. Count the writes
+     instead: a refusal must never reach storage. */
+  const proto = dom.window.Storage.prototype;
+  const realSet = proto.setItem;
+  let writes = 0;
+  proto.setItem = function (...args) { writes += 1; return realSet.apply(this, args); };
+  try {
+    tabByLabel(doc, '上下页').click();
+    tabByLabel(doc, '对话').click();
+  } finally {
+    proto.setItem = realSet;
+  }
+  assert.equal(writes, 0, 'a refused hide writes nothing at all');
+  assert.equal(tabByLabel(doc, '上下页').hasAttribute('data-snc-hidden'), false,
+    'the view on screen cannot be hidden: the host would silently fall back to chat');
+  assert.equal(tabByLabel(doc, '对话').hasAttribute('data-snc-hidden'), false, 'chat can never be hidden');
+  dispose();
+});
+
+test('dragging a row by its body reorders it, and the click after the drop does not toggle it', () => {
+  const { doc, dom, dispose } = start(both());
+  gear(doc).click();
+  const units = stubUnits(dom.window, [...doc.querySelectorAll('nav > button[class*="panelRow"]')]);
+  stubHit(dom.window, units);
+  const row = rows(doc)[0];
+  /* a press on the label is a drag source while editing, not just the grip */
+  pointer(dom.window, 'pointerdown', row.querySelector('[class*="panelTitle"]'), 10, 14);
+  pointer(dom.window, 'pointermove', dom.window.document.body, 10, 70);
+  pointer(dom.window, 'pointerup', dom.window.document.body, 10, 70);
+  assert.deepEqual(orderOf(doc), ['自动化任务', '插件', '上下文洞察', '扩展管理', '任务看板', '记忆系统'],
+    'the row moved');
+  /* browsers emit a click after pointerup; without the suppression it would
+     toggle the very row the user just dragged */
+  row.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.equal(row.hasAttribute('data-snc-hidden'), false, 'the drop is a reorder, not a toggle');
+  assert.deepEqual(stateOf(dom.window).hidden, []);
+  dispose();
+});
+
+test('a wobbling whole-row press still toggles the entry', () => {
+  /* the whole row is a toggle first: a 5px hand wobble must not start a drag
+     and then swallow the click, or the row would neither move nor toggle */
+  const { doc, dom, dispose } = start(both());
+  gear(doc).click();
+  const row = rows(doc)[0];
+  pointer(dom.window, 'pointerdown', row.querySelector('[class*="panelTitle"]'), 10, 20);
+  pointer(dom.window, 'pointermove', dom.window.document.body, 10, 25);
+  pointer(dom.window, 'pointerup', dom.window.document.body, 10, 25);
+  assert.equal(row.hasAttribute('data-snc-dragging'), false, 'the press never became a drag');
+  row.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.equal(row.dataset.sncHidden, 'true', 'the wobble is still a toggle');
+  dispose();
+});
+
+test('a touch press on a row keeps scrolling instead of starting a drag', () => {
+  /* touch is the one input where a whole-row drag would fight the list scroll,
+     so the grip stays its drag source and a tap still toggles */
+  const { doc, dom, dispose } = start(both());
+  gear(doc).click();
+  const row = rows(doc)[0];
+  const nav = doc.querySelector('nav[class*="panelList"]');
+  pointer(dom.window, 'pointerdown', row.querySelector('[class*="panelTitle"]'), 10, 20, 'touch');
+  pointer(dom.window, 'pointermove', dom.window.document.body, 10, 70, 'touch');
+  assert.equal(row.hasAttribute('data-snc-dragging'), false, 'no drag, the page keeps its scroll');
+  assert.equal(nav.hasAttribute('data-snc-sorting'), false);
+  row.querySelector('[class*="panelTitle"]').dispatchEvent(
+    new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.equal(row.dataset.sncHidden, 'true', 'a tap toggles like any other press');
+  dispose();
+});
+
+test('an unrelated panelList is left alone in edit mode too', () => {
+  /* the host renders a second panelList for the local session list. It is not
+     decorated (isPanelList), so neither the row toggle nor the reorder may touch
+     it: writing its keys into savedOrder would orphan every key of ours. */
+  const html = navigation() +
+    `<nav class="_2H3hWW_panelList" aria-label="Local">${panel('Local 条目')}</nav>`;
+  const { doc, dom, dispose } = start(html);
+  gear(doc).click();
+  const foreign = doc.querySelector('nav[aria-label="Local"]');
+  const foreignRow = foreign.querySelector('button[class*="panelRow"]');
+  let reached = 0;
+  foreignRow.addEventListener('click', () => { reached += 1; });
+  foreignRow.click();
+  assert.equal(reached, 1, 'the host still sees the press');
+  assert.deepEqual(stateOf(dom.window).hidden, [], 'and nothing is hidden in our record');
+  assert.equal(foreignRow.hasAttribute('data-snc-hidden'), false);
+
+  const units = stubUnits(dom.window, [foreignRow]);
+  stubHit(dom.window, units);
+  pointer(dom.window, 'pointerdown', foreignRow, 10, 14);
+  pointer(dom.window, 'pointermove', dom.window.document.body, 10, 70);
+  pointer(dom.window, 'pointerup', dom.window.document.body, 10, 70);
+  assert.deepEqual(stateOf(dom.window).order, [], 'an unmanaged list never writes our order');
+  dispose();
+});
+
+test('a cancelled gesture commits nothing and does not swallow the next click', () => {
+  const { doc, dom, dispose } = start(both());
+  gear(doc).click();
+  const units = stubUnits(dom.window, [...doc.querySelectorAll('nav > button[class*="panelRow"]')]);
+  stubHit(dom.window, units);
+  const before = orderOf(doc);
+  const row = rows(doc)[0];
+  pointer(dom.window, 'pointerdown', row.querySelector('[class*="panelTitle"]'), 10, 14);
+  pointer(dom.window, 'pointermove', dom.window.document.body, 10, 70);
+  /* the OS takes the gesture away mid-drag: an abort, not a drop */
+  pointer(dom.window, 'pointercancel', dom.window.document.body, 10, 70);
+  assert.deepEqual(orderOf(doc), before, 'the list keeps the order it had');
+  assert.deepEqual(stateOf(dom.window).order, [], 'and nothing was written');
+  assert.equal(row.hasAttribute('data-snc-dragging'), false, 'the carried row is not left dimmed');
+  row.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  assert.equal(row.dataset.sncHidden, 'true', 'the next click still toggles: a cancel is not a drop');
+  dispose();
+});
+
+test('a row the host removes mid-drag is not put back by the drop', () => {
+  const { doc, dom, dispose } = start(both());
+  gear(doc).click();
+  const units = stubUnits(dom.window, [...doc.querySelectorAll('nav > button[class*="panelRow"]')]);
+  stubHit(dom.window, units);
+  const row = rows(doc)[0];
+  pointer(dom.window, 'pointerdown', row.querySelector('[class*="panelTitle"]'), 10, 14);
+  pointer(dom.window, 'pointermove', dom.window.document.body, 10, 70);
+  /* the host re-renders the list while the pointer is down */
+  row.remove();
+  pointer(dom.window, 'pointerup', dom.window.document.body, 10, 70);
+  assert.equal(row.isConnected, false, 'the host removed it and keeps it removed');
+  assert.deepEqual(stateOf(dom.window).order, [], 'the removed row is never persisted');
+  dispose();
+});
+
+test('the host\'s anchor-wrapped row toggles from its whole row, controls and gap included', () => {
+  const { doc, dom, dispose } = start(navigationWithMore());
+  gear(doc).click();
+  const anchor = doc.querySelector('[class*="moreAnchor"]');
+  const ctl = anchor.querySelector(':scope > .snc-ctl');
+  /* the slot is a child of the anchor, not of the inner button: this press used
+     to be swallowed without toggling anything, while the same spot toggles on
+     every other row */
+  ctl.click();
+  assert.equal(anchor.dataset.sncHidden, 'true', 'the slot toggles the row');
+  assert.deepEqual(stateOf(dom.window).hidden, ['更多']);
+  /* pressing the anchor itself (the gap around the button) toggles too */
+  anchor.click();
+  assert.equal(anchor.hasAttribute('data-snc-hidden'), false, 'and the anchor gap toggles it back');
+  assert.deepEqual(stateOf(dom.window).hidden, []);
   dispose();
 });
