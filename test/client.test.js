@@ -45,7 +45,7 @@ function start(html = navigation(), record) {
   return { dom, doc: dom.window.document, dispose: () => { for (const fn of disposers.reverse()) fn(); } };
 }
 /* v2 adds the two order lists; v1 records are still read and upgraded */
-const rec = (over = {}) => ({ v: 2, folded: false, hidden: [], views: [], order: [], orderViews: [], ...over });
+const rec = (over = {}) => ({ v: 2, folded: false, hidden: [], views: [], actions: [], order: [], orderViews: [], ...over });
 /* a v1 record, as an older build wrote it */
 const recV1 = (over = {}) => ({ v: 1, folded: false, hidden: [], views: [], ...over });
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
@@ -596,6 +596,149 @@ test('a launcher hidden in an earlier session comes back hidden', () => {
   gear(doc).click();
   assert.equal(doc.querySelector('[data-snc-more-check]').checked, false, 'the box agrees with the store');
   dispose();
+});
+
+/* The "..." menu is a portal: the host mounts it on <body>, outside the header,
+   and its rows come from entry-customization through the views.actions slot --
+   one menuitem per folded view (its label inside an entry-name span, plus a
+   check mark when it is the active one) and two action rows that carry an icon
+   instead of a label span. On a narrow screen this menu is the ONLY place the
+   folded views exist, so it is where their boxes have to be. */
+const viewsMenu = (labels = ['画廊', '编队', '记忆系统'], activeLabel = '画廊') =>
+  `<div class="_Dc7zOa_viewsMoreMenu" role="menu">${labels
+    .map((l) => `<button type="button" role="menuitem"><span class="EWdd3W_entryName"><span class="EWdd3W_entryTitle">${l}</span>${l === activeLabel ? '<svg class="EWdd3W_activeMark"></svg>' : ''}</span></button>`)
+    .join('')}<button type="button" role="menuitem"><svg class="_x_icon"></svg>浏览更多插件</button><button type="button" role="menuitem"><svg class="_x_icon"></svg>创建你的插件</button></div>`;
+const menuRows = (doc) => [...doc.querySelectorAll('[class*="viewsMoreMenu"] button[role="menuitem"]')];
+const menuRowByLabel = (doc, label) => menuRows(doc).find((r) => r.textContent.trim() === label);
+const menuBoxOf = (doc, label) => menuRowByLabel(doc, label)?.querySelector('[data-snc-menu-check]') || null;
+/* a phone: two tabs in the strip, everything else folded into the menu */
+const phone = (labels = ['对话', '上下页'], folded) => both(labels, 0) + moreButton() + viewsMenu(folded);
+
+test('every row of the "..." menu gets a box: the folded views and the host rows', () => {
+  const { doc, dispose } = start(phone());
+  assert.equal(doc.querySelectorAll('[data-snc-menu-check]').length, 0, 'no boxes at rest');
+
+  gear(doc).click();
+  assert.equal(doc.querySelectorAll('[data-snc-menu-check]').length, 5, 'three views plus two host rows');
+  assert.equal(menuBoxOf(doc, '画廊').closest('.snc-ctl').parentElement, menuRowByLabel(doc, '画廊'),
+    'the box lives in the row, so a press has to be stopped (onControlClick)');
+  // the two host rows are not views, but on a phone this menu is the only
+  // place they exist at all, so they are toggleable there too
+  assert.equal(menuRowByLabel(doc, '浏览更多插件').querySelector('.snc-ctl').parentElement,
+    menuRowByLabel(doc, '浏览更多插件'));
+  assert.equal(menuBoxOf(doc, '创建你的插件').checked, true);
+  // the menu is portalled out of the strip, so the flag has to be on <html>
+  assert.equal(doc.documentElement.dataset.sncEditing, 'true');
+  assert.match(cssOf(doc), /\[class\*="viewsMoreMenu"\] button\[role="menuitem"\] > \.snc-ctl/);
+
+  gear(doc).click();
+  assert.equal(doc.querySelectorAll('[data-snc-menu-check]').length, 0, 'controls removed on exit');
+  assert.equal(doc.documentElement.dataset.sncEditing, 'false');
+  dispose();
+});
+
+test('a host row is hidden into its own list, not the views list', () => {
+  const { doc, dom, dispose } = start(phone());
+  gear(doc).click();
+  const box = menuBoxOf(doc, '浏览更多插件');
+  box.checked = false;
+  box.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.equal(menuRowByLabel(doc, '浏览更多插件').dataset.sncHidden, 'true');
+  assert.deepEqual(stateOf(dom.window).actions, ['浏览更多插件'], 'the host rows keep their own list');
+  assert.deepEqual(stateOf(dom.window).views, [], 'a host row is not a view');
+
+  gear(doc).click();
+  assert.equal(menuRowByLabel(doc, '浏览更多插件').dataset.sncHidden, 'true', 'stays hidden after exit');
+  assert.equal(menuRowByLabel(doc, '创建你的插件').hasAttribute('data-snc-hidden'), false, 'the other one is untouched');
+  dispose();
+});
+
+test('a hidden host row is not a view: no active-view refusal applies to it', () => {
+  const { doc, dom, dispose } = start(phone());
+  gear(doc).click();
+  const box = menuBoxOf(doc, '创建你的插件');
+  box.checked = false;
+  box.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.equal(box.checked, false, 'hidden outright, nothing to protect');
+  assert.equal(box.hasAttribute('aria-invalid'), false);
+  assert.deepEqual(stateOf(dom.window).actions, ['创建你的插件']);
+  dispose();
+});
+
+test('a box in the menu hides a folded view and is remembered', () => {
+  const { doc, dom, dispose } = start(phone());
+  gear(doc).click();
+  const box = menuBoxOf(doc, '编队');
+  box.checked = false;
+  box.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.equal(menuRowByLabel(doc, '编队').dataset.sncHidden, 'true');
+  assert.deepEqual(stateOf(dom.window).views, ['编队'], 'the same store the tabs write');
+
+  gear(doc).click();
+  assert.equal(menuRowByLabel(doc, '编队').dataset.sncHidden, 'true', 'stays hidden after exit');
+  assert.match(cssOf(doc), /html\[data-snc-editing="false"\] \[class\*="viewsMoreMenu"\]/);
+  dispose();
+});
+
+test('the active view cannot be hidden from the menu either', () => {
+  const { doc, dom, dispose } = start(phone(['对话', '上下页'], ['画廊', '编队']));
+  gear(doc).click();
+  const active = menuBoxOf(doc, '画廊');
+  active.checked = false;
+  active.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.equal(active.checked, true, 'refused, the box goes back');
+  assert.equal(active.getAttribute('aria-invalid'), 'true');
+  assert.deepEqual(stateOf(dom.window).views, [], 'nothing was stored');
+
+  const other = menuBoxOf(doc, '编队');
+  other.checked = false;
+  other.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+  assert.deepEqual(stateOf(dom.window).views, ['编队'], 'a folded view that is not active still is');
+  dispose();
+});
+
+test('a menu that opens while editing is painted without another gear press', async () => {
+  const { doc, dispose } = start(both(['对话', '上下页'], 0) + moreButton());
+  gear(doc).click();
+  assert.equal(doc.querySelectorAll('[data-snc-menu-check]').length, 0, 'nothing to paint yet');
+  doc.body.insertAdjacentHTML('beforeend', viewsMenu());
+  await flush();
+  assert.equal(doc.querySelectorAll('[data-snc-menu-check]').length, 5, 'the observer painted the portal');
+  dispose();
+});
+
+test('a press on a menu box never selects the view or dismisses the menu', () => {
+  const { doc, dom, dispose } = start(phone());
+  gear(doc).click();
+  const row = menuRowByLabel(doc, '编队');
+  let reached = 0;
+  row.addEventListener('click', () => { reached += 1; });
+  const box = menuBoxOf(doc, '编队');
+  assert.equal(box.checked, true, 'a visible view starts checked');
+  box.click();
+  assert.equal(reached, 0, 'the host row must not see the click, or the menu would close');
+  assert.equal(box.checked, false, 'the box still toggled');
+  assert.deepEqual(stateOf(dom.window).views, ['编队']);
+  dispose();
+});
+
+test('a stored hidden view comes back hidden in the menu, with no edit mode', () => {
+  const { doc, dispose } = start(phone(['对话', '上下页'], ['画廊', '编队']), rec({ views: ['画廊'] }));
+  assert.equal(menuRowByLabel(doc, '画廊').dataset.sncHidden, 'true', 'applied on boot');
+  assert.equal(menuRowByLabel(doc, '编队').hasAttribute('data-snc-hidden'), false);
+  gear(doc).click();
+  assert.equal(menuBoxOf(doc, '画廊').checked, false, 'the box agrees with the store');
+  assert.equal(menuBoxOf(doc, '编队').checked, true);
+  dispose();
+});
+
+test('the menu boxes go with the plugin when it is disabled', () => {
+  const { doc, dispose } = start(phone());
+  gear(doc).click();
+  assert.equal(doc.querySelectorAll('[data-snc-menu-check]').length, 5);
+  dispose();
+  assert.equal(doc.querySelectorAll('[data-snc-menu-check]').length, 0, 'nothing left behind');
+  assert.equal(doc.documentElement.hasAttribute('data-snc-editing'), false);
 });
 
 test('a stored hidden chat entry is dropped on boot', async () => {
