@@ -1,6 +1,6 @@
 {
   "name": "dsh-sidebar-manager",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "license": "MIT",
   "type": "module",
   "description": "DSH sidebar manager: collapses the left panel list into one group row, and its gear opens an edit mode to show, hide and drag-reorder sidebar extension entries and conversation view tabs",
