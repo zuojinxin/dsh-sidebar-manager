@@ -3,7 +3,7 @@
   "version": "0.10.1",
   "license": "MIT",
   "type": "module",
-  "description": "DSH sidebar manager: collapses the left panel list into one group row, and its gear opens an edit mode to show, hide and drag-reorder sidebar extension entries and conversation view tabs",
+  "description": "DSH sidebar manager: collapses the left panel list into one group row, and its gear opens an edit mode to show, hide and drag-reorder sidebar extension entries, conversation view tabs and right-sidebar guide cards",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/zuojinxin/dsh-sidebar-manager.git"
@@ -44,6 +44,7 @@
     "cordis.patch.yml"
   ],
   "scripts": {
-    "test": "node --test test/*.test.js"
+    "test": "node --test test/*.test.js",
+    "test:browser": "node test/ego-check.mjs"
   }
 }

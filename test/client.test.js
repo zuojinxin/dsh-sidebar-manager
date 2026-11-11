@@ -45,7 +45,7 @@ function start(html = navigation(), record) {
   return { dom, doc: dom.window.document, dispose: () => { for (const fn of disposers.reverse()) fn(); } };
 }
 /* v2 adds the two order lists; v1 records are still read and upgraded */
-const rec = (over = {}) => ({ v: 2, folded: false, hidden: [], views: [], actions: [], order: [], orderViews: [], ...over });
+const rec = (over = {}) => ({ v: 2, folded: false, hidden: [], views: [], actions: [], order: [], orderViews: [], right: [], orderRight: [], ...over });
 /* a v1 record, as an older build wrote it */
 const recV1 = (over = {}) => ({ v: 1, folded: false, hidden: [], views: [], ...over });
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
@@ -1530,4 +1530,472 @@ test('the host\'s anchor-wrapped row toggles from its whole row, controls and ga
   assert.equal(anchor.hasAttribute('data-snc-hidden'), false, 'and the anchor gap toggles it back');
   assert.deepEqual(stateOf(dom.window).hidden, []);
   dispose();
+});
+
+/* ---------------------- right sidebar guide cards ----------------------
+   The hero and the entryCell/moreAnchor units are direct guide children. The
+   button stays inside its host-owned unit; descriptions and shortcuts are not
+   stable identities. */
+const guideEntries = [
+  ['files', '文件', '浏览项目文件', '⌘1'],
+  ['terminal', '终端', '打开命令行', '⌘2'],
+  ['git', 'Git', '查看版本变更', '⌘3'],
+  ['browser', '浏览器', '打开网页', '⌘4'],
+];
+const rightGuide = () => `<div data-sidebar-right-guide class="geFEbW_guide">` +
+  `<span class="geFEbW_hero" aria-hidden="true">compass</span>` +
+  guideEntries.map(([kind, title, description, shortcut]) =>
+    `<div class="geFEbW_entryCell">` + (kind === 'terminal'
+      ? `<div data-sidebar-right-guide-entry="terminal" class="terminal_entry">` +
+        `<button type="button" class="terminal_main" aria-label="${title} ${description}"></button>` +
+        `<span class="terminal_title" aria-hidden="true">${title}</span>` +
+        `<span class="terminal_menu"><button type="button" class="terminal_trigger" aria-label="选择 shell" aria-haspopup="menu">⌄</button></span>` +
+        `<span class="terminal_description">${description}</span><span class="terminal_shortcut">${shortcut}</span></div>`
+      : `<button type="button" data-sidebar-right-guide-entry="${kind}" class="geFEbW_entry">` +
+        `<span class="geFEbW_entryTitle">${title}</span><span class="geFEbW_entryDescription">${description}</span>` +
+        `<span class="geFEbW_entryShortcut">${shortcut}</span></button>`) + '</div>').join('') +
+  `<span class="geFEbW_moreAnchor"><button type="button" class="geFEbW_entry" aria-label="更多工具" aria-haspopup="menu">` +
+  `<span class="geFEbW_entryTitle">更多工具</span></button></span></div>`;
+const rightUnits = (guide) => [...guide.children].filter((child) => child.querySelector(':scope > [data-sidebar-right-guide-entry], :scope > button[aria-haspopup="menu"]'));
+const rightUnit = (guide, key) => rightUnits(guide).find((unit) => {
+  const entry = unit.querySelector('[data-sidebar-right-guide-entry]');
+  return entry ? `kind:${entry.getAttribute('data-sidebar-right-guide-entry')}` === key : key === 'action:more';
+});
+const rightOrder = (guide) => rightUnits(guide).map((unit) => {
+  const entry = unit.querySelector('[data-sidebar-right-guide-entry]');
+  return entry ? `kind:${entry.getAttribute('data-sidebar-right-guide-entry')}` : 'action:more';
+});
+const rightBox = (unit) => unit.querySelector(':scope > .snc-ctl > input[type="checkbox"]');
+const defaultRightOrder = ['kind:files', 'kind:terminal', 'kind:git', 'kind:browser', 'action:more'];
+
+test('the existing editor hides and restores guide cards, including files and more', () => {
+  const { doc, dom, dispose } = start(both() + rightGuide());
+  try {
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    const hero = guide.firstElementChild;
+    const units = rightUnits(guide);
+    const buttons = units.map((unit) => unit.querySelector('[data-sidebar-right-guide-entry], button.geFEbW_entry'));
+    assert.equal(units.length, 5);
+    assert.equal(guide.querySelector('.snc-ctl'), null, 'no guide controls outside edit mode');
+
+    gear(doc).click();
+    assert.equal(gear(doc).getAttribute('aria-pressed'), 'true');
+    assert.equal(doc.querySelector('[role="dialog"]'), null, 'the guide uses the existing inline editor');
+    assert.deepEqual(rightUnits(guide), units, 'the host units are not wrapped or reparented');
+    assert.equal(guide.firstElementChild, hero, 'the hero stays first');
+    for (const [i, unit] of units.entries()) {
+      const ctl = unit.querySelector(':scope > .snc-ctl');
+      assert.ok(ctl, 'each direct guide unit gets controls');
+      assert.equal(unit.firstElementChild, ctl, 'controls are prepended to the unit');
+      assert.ok(ctl.querySelector('[data-snc-drag]'), 'each card can be reordered');
+      assert.ok(rightBox(unit)?.checked, 'each card starts visible');
+      assert.equal(buttons[i].parentElement, unit, 'the host button keeps its parent');
+    }
+
+    const files = rightUnit(guide, 'kind:files');
+    const more = rightUnit(guide, 'action:more');
+    rightBox(files).click();
+    rightBox(more).click();
+    assert.deepEqual(stateOf(dom.window).right, ['kind:files', 'action:more']);
+    for (const unit of [files, more]) {
+      assert.equal(unit.dataset.sncHidden, 'true');
+      assert.equal(rightBox(unit).checked, false);
+      assert.notEqual(dom.window.getComputedStyle(unit).display, 'none', 'hidden cards remain reachable while editing');
+      assert.notEqual(dom.window.getComputedStyle(unit).visibility, 'hidden');
+      assert.ok([unit, unit.querySelector('button')].some((el) => {
+        const opacity = Number.parseFloat(dom.window.getComputedStyle(el).opacity);
+        return opacity > 0 && opacity < 1;
+      }), 'a hidden card is dimmed while editing');
+    }
+
+    gear(doc).click();
+    for (const unit of [files, more]) {
+      assert.equal(rightBox(unit), null, 'controls leave with edit mode');
+      assert.equal(dom.window.getComputedStyle(unit).display, 'none', 'the hidden unit leaves the layout');
+    }
+    gear(doc).click();
+    for (const unit of [files, more]) {
+      assert.equal(rightBox(unit).checked, false, 'hidden cards can be restored');
+      rightBox(unit).click();
+    }
+    assert.deepEqual(stateOf(dom.window).right, []);
+    for (const key of ['kind:terminal', 'kind:git', 'kind:browser']) {
+      const unit = rightUnit(guide, key);
+      rightBox(unit).click();
+      assert.equal(unit.dataset.sncHidden, 'true');
+      assert.deepEqual(stateOf(dom.window).right, [key], 'each entry stores its stable kind');
+      rightBox(unit).click();
+    }
+    assert.deepEqual(stateOf(dom.window).right, []);
+    gear(doc).click();
+    assert.notEqual(dom.window.getComputedStyle(files).display, 'none');
+    assert.notEqual(dom.window.getComputedStyle(more).display, 'none');
+  } finally {
+    dispose();
+  }
+});
+
+test('guide card and checkbox clicks toggle visibility without opening the host tool or menu', () => {
+  const { doc, dom, dispose } = start(navigation() + rightGuide());
+  try {
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    const files = rightUnit(guide, 'kind:files');
+    const more = rightUnit(guide, 'action:more');
+    const reached = { button: 0, unit: 0 };
+    for (const unit of [files, more]) {
+      unit.addEventListener('click', () => { reached.unit += 1; });
+      unit.querySelector('button').addEventListener('click', () => { reached.button += 1; });
+    }
+    gear(doc).click();
+    for (const [unit, key] of [[files, 'kind:files'], [more, 'action:more']]) {
+      const box = rightBox(unit);
+      assert.ok(box, `checkbox for ${key}`);
+      unit.querySelector('[class*="entryTitle"]').click();
+      assert.equal(box.checked, false, 'clicking the card body hides it');
+      assert.deepEqual(stateOf(dom.window).right, [key]);
+      box.click();
+      assert.equal(box.checked, true, 'the checkbox restores it');
+      assert.deepEqual(stateOf(dom.window).right, []);
+    }
+    assert.deepEqual(reached, { button: 0, unit: 0 }, 'neither host handler sees editing clicks');
+    gear(doc).click();
+    files.querySelector('button[data-sidebar-right-guide-entry]').click();
+    more.querySelector('button').click();
+    assert.deepEqual(reached, { button: 2, unit: 2 }, 'host clicks work normally after editing');
+  } finally {
+    dispose();
+  }
+});
+
+test('vertical guide drag saves immediately without changing left or view preferences', () => {
+  const left = ['记忆系统', '插件', '自动化任务', '上下文洞察', '扩展管理', '任务看板'];
+  const views = ['对话', '画廊', '上下页', '编队', '记忆系统'];
+  const saved = rec({ hidden: ['任务看板'], views: ['编队'], actions: ['浏览更多插件'],
+    order: left, orderViews: views, right: ['kind:browser'], orderRight: [] });
+  const { doc, dom, dispose } = start(both() + rightGuide(), saved);
+  try {
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    const hero = guide.firstElementChild;
+    gear(doc).click();
+    const units = stubUnits(dom.window, rightUnits(guide));
+    stubHit(dom.window, units);
+    const files = rightUnit(guide, 'kind:files');
+    assert.ok(files.querySelector('[data-snc-drag]'), 'guide card has a drag handle');
+    let opened = 0;
+    files.querySelector('button[data-sidebar-right-guide-entry]').addEventListener('click', () => { opened += 1; });
+    pointer(dom.window, 'pointerdown', files.querySelector('[class*="entryTitle"]'), 10, 54);
+    pointer(dom.window, 'pointermove', doc.body, 10, 110);
+    assert.deepEqual(rightOrder(guide), defaultRightOrder, 'the preview does not reorder before drop');
+    pointer(dom.window, 'pointerup', doc.body, 10, 110);
+    const moved = ['kind:terminal', 'kind:files', 'kind:git', 'kind:browser', 'action:more'];
+    assert.deepEqual(rightOrder(guide), moved);
+    assert.equal(guide.firstElementChild, hero, 'the hero is not a draggable unit');
+    const record = stateOf(dom.window);
+    assert.deepEqual(record.orderRight, moved, 'drop writes the right order immediately');
+    assert.deepEqual(record.right, ['kind:browser']);
+    for (const key of ['hidden', 'views', 'actions', 'order', 'orderViews']) {
+      assert.deepEqual(record[key], saved[key], `${key} is independent of the right guide`);
+    }
+    files.querySelector('button[data-sidebar-right-guide-entry]').dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true, cancelable: true }));
+    assert.equal(opened, 0, 'the post-drag click does not open the tool');
+    assert.equal(files.hasAttribute('data-snc-hidden'), false, 'the post-drag click does not hide the card');
+    assert.deepEqual(stateOf(dom.window).right, ['kind:browser']);
+
+    const again = start(both() + rightGuide(), record);
+    try {
+      assert.deepEqual(rightOrder(again.doc.querySelector('[data-sidebar-right-guide]')), moved, 'the order survives reload');
+    } finally {
+      again.dispose();
+    }
+  } finally {
+    dispose();
+  }
+});
+
+test('an old v2 record without right fields still permits saving right preferences', () => {
+  const old = rec({ hidden: ['任务看板'], views: ['编队'] });
+  delete old.right;
+  delete old.orderRight;
+  const { doc, dom, dispose } = start(both() + rightGuide(), old);
+  try {
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    assert.deepEqual(rightOrder(guide), defaultRightOrder);
+    assert.ok(rightUnits(guide).every((unit) => !unit.hasAttribute('data-snc-hidden')));
+    gear(doc).click();
+    const box = rightBox(rightUnit(guide, 'kind:files'));
+    assert.ok(box, 'an old record still exposes the right editor');
+    box.click();
+    const record = stateOf(dom.window);
+    assert.equal(record.v, 2, 'right preferences are additive to v2');
+    assert.deepEqual(record.right, ['kind:files']);
+    assert.deepEqual(record.hidden, old.hidden);
+    assert.deepEqual(record.views, old.views);
+  } finally {
+    dispose();
+  }
+});
+
+test('saved guide identities replay with changed descriptions and invalid fields default safely', () => {
+  const order = ['action:more', 'kind:git', 'kind:files', 'kind:terminal', 'kind:browser'];
+  const saved = rec({ right: ['kind:terminal', 'action:more'], orderRight: order });
+  const changed = rightGuide().replace('打开命令行', '新的描述 🙂').replace('⌘2', 'Ctrl+Alt+T');
+  const first = start(both() + changed, saved);
+  try {
+    const guide = first.doc.querySelector('[data-sidebar-right-guide]');
+    assert.deepEqual(rightOrder(guide), order, 'stable keys restore the saved order');
+    assert.equal(rightUnit(guide, 'kind:terminal').dataset.sncHidden, 'true');
+    assert.equal(rightUnit(guide, 'action:more').dataset.sncHidden, 'true');
+    assert.equal(rightUnit(guide, 'kind:files').hasAttribute('data-snc-hidden'), false);
+    assert.equal(guide.firstElementChild.className, 'geFEbW_hero');
+  } finally {
+    first.dispose();
+  }
+
+  const cases = [
+    { right: null, orderRight: [null, 'kind:browser', 42, 'kind:files'], hidden: [], order: ['kind:browser', 'kind:files'],
+      rendered: ['kind:browser', 'kind:files', 'kind:terminal', 'kind:git', 'action:more'] },
+    { right: ['kind:files', null, 7, 'action:more'], orderRight: false,
+      hidden: ['kind:files', 'action:more'], order: [], rendered: defaultRightOrder },
+    { right: { 0: 'kind:files' }, orderRight: 'kind:git', hidden: [], order: [], rendered: defaultRightOrder },
+    { right: 0, orderRight: null, hidden: [], order: [], rendered: defaultRightOrder },
+  ];
+  for (const example of cases) {
+    const app = start(both() + rightGuide(), rec({ right: example.right, orderRight: example.orderRight }));
+    try {
+      const guide = app.doc.querySelector('[data-sidebar-right-guide]');
+      assert.deepEqual(rightOrder(guide), example.rendered);
+      for (const key of defaultRightOrder) {
+        assert.equal(rightUnit(guide, key).dataset.sncHidden === 'true', example.hidden.includes(key), key);
+      }
+      gear(app.doc).click();
+      const box = rightBox(rightUnit(guide, 'kind:terminal'));
+      assert.ok(box, 'malformed stored fields do not break editing');
+      box.dispatchEvent(new app.dom.window.Event('change', { bubbles: true }));
+      const record = stateOf(app.dom.window);
+      assert.deepEqual(record.right, example.hidden, 'invalid hidden entries are discarded on save');
+      assert.ok(record.orderRight === undefined || Array.isArray(record.orderRight));
+      assert.deepEqual(record.orderRight || [], example.order, 'an invalid order safely defaults to empty');
+      assert.equal(record.v, 2);
+    } finally {
+      app.dispose();
+    }
+  }
+});
+
+test('late and remounted guides share saved visibility and order across instances', async () => {
+  const order = ['kind:browser', 'action:more', 'kind:files', 'kind:terminal', 'kind:git'];
+  const { doc, dom, dispose } = start(both(), rec({ right: ['kind:files', 'action:more'], orderRight: order }));
+  try {
+    gear(doc).click();
+    doc.body.insertAdjacentHTML('beforeend', rightGuide() + rightGuide());
+    await flush();
+    let guides = [...doc.querySelectorAll('[data-sidebar-right-guide]')];
+    assert.equal(guides.length, 2);
+    for (const guide of guides) {
+      assert.deepEqual(rightOrder(guide), order, 'late guide receives the saved order');
+      assert.equal(rightUnit(guide, 'action:more').dataset.sncHidden, 'true');
+      const box = rightBox(rightUnit(guide, 'kind:files'));
+      assert.ok(box, 'late guide receives edit controls');
+      assert.equal(box.checked, false);
+    }
+    rightBox(rightUnit(guides[0], 'kind:files')).click();
+    await flush();
+    assert.deepEqual(stateOf(dom.window).right, ['action:more']);
+    assert.equal(rightBox(rightUnit(guides[1], 'kind:files')).checked, true, 'the other guide reflects the change');
+
+    guides[0].outerHTML = rightGuide();
+    await flush();
+    guides = [...doc.querySelectorAll('[data-sidebar-right-guide]')];
+    for (const guide of guides) {
+      assert.deepEqual(rightOrder(guide), order, 'a remount replays the order');
+      assert.equal(rightUnit(guide, 'action:more').dataset.sncHidden, 'true');
+      assert.equal(rightBox(rightUnit(guide, 'kind:files')).checked, true);
+      assert.equal(guide.firstElementChild.className, 'geFEbW_hero');
+    }
+    gear(doc).click();
+    assert.ok(guides.every((guide) => guide.querySelector('.snc-ctl') === null));
+    assert.ok(guides.every((guide) => dom.window.getComputedStyle(rightUnit(guide, 'action:more')).display === 'none'));
+  } finally {
+    dispose();
+  }
+});
+
+test('guide management leaves similar outside cards and the hero alone without observer churn', async () => {
+  const foreign = `<div id="foreign" class="geFEbW_entryCell"><button class="geFEbW_entry" ` +
+    `data-sidebar-right-guide-entry="files">外部文件</button></div>` +
+    `<div data-sidebar-right-dock><button role="tab" aria-selected="true">文件</button></div>`;
+  const order = ['kind:browser', 'kind:git', 'kind:terminal', 'kind:files', 'action:more'];
+  const { doc, dom, dispose } = start(both() + rightGuide() + foreign,
+    rec({ right: ['kind:files'], orderRight: order }));
+  let observer;
+  let stoppedStorm = false;
+  try {
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    const hero = guide.firstElementChild;
+    const outside = doc.querySelector('#foreign');
+    const dockTab = doc.querySelector('[data-sidebar-right-dock] button');
+    assert.deepEqual(rightOrder(guide), order);
+    assert.equal(rightUnit(guide, 'kind:files').dataset.sncHidden, 'true');
+    gear(doc).click();
+    await flush();
+    assert.equal(guide.firstElementChild, hero);
+    assert.equal(hero.querySelector('.snc-ctl'), null);
+    assert.equal(hero.hasAttribute('data-snc-hidden'), false);
+    assert.equal(outside.querySelector('.snc-ctl'), null);
+    assert.equal(outside.hasAttribute('data-snc-hidden'), false);
+    assert.equal(dockTab.querySelector('.snc-ctl'), null);
+    let hostClicks = 0;
+    for (const el of [hero, outside.querySelector('button'), dockTab]) el.addEventListener('click', () => { hostClicks += 1; });
+    hero.click();
+    outside.querySelector('button').click();
+    dockTab.click();
+    assert.equal(hostClicks, 3, 'unmanaged elements keep their host click behavior');
+    assert.deepEqual(stateOf(dom.window).right, ['kind:files']);
+
+    let changes = 0;
+    observer = new dom.window.MutationObserver((records) => {
+      changes += records.length;
+      if (changes > 32) {
+        stoppedStorm = true;
+        observer.disconnect();
+        dispose();
+      }
+    });
+    observer.observe(guide, { childList: true, subtree: true });
+    for (let i = 0; i < 4; i += 1) {
+      const marker = doc.createElement('i');
+      doc.body.append(marker);
+      marker.remove();
+      await flush();
+    }
+    await new Promise((resolve) => dom.window.setTimeout(resolve, 10));
+    assert.equal(stoppedStorm, false, 'replay must settle rather than retrigger itself');
+    assert.ok(changes <= 16, `resyncs must not repeatedly mutate guide children: ${changes}`);
+    assert.deepEqual(rightOrder(guide), order);
+  } finally {
+    observer?.disconnect();
+    if (!stoppedStorm) dispose();
+  }
+});
+
+test('disabling the plugin removes guide controls and hidden or editing flags', async () => {
+  const { doc, dom, dispose } = start(both() + rightGuide(),
+    rec({ right: ['kind:files', 'action:more'], orderRight: ['action:more', 'kind:files'] }));
+  let disposed = false;
+  try {
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    const files = rightUnit(guide, 'kind:files');
+    gear(doc).click();
+    assert.ok(rightBox(files), 'guide was managed before teardown');
+    assert.equal(files.dataset.sncHidden, 'true');
+    let opened = 0;
+    files.querySelector('button[data-sidebar-right-guide-entry]').addEventListener('click', () => { opened += 1; });
+    dispose();
+    disposed = true;
+    assert.equal(guide.querySelector('.snc-ctl'), null);
+    assert.deepEqual(rightOrder(guide), defaultRightOrder, 'disabling restores the native guide order');
+    assert.equal(guide.matches('[data-snc-editing], [data-snc-hidden]'), false);
+    assert.equal(guide.querySelector('[data-snc-hidden], [data-snc-editing], [data-snc-sorting], [data-snc-dragging], [data-snc-drop]'), null);
+    assert.equal(doc.documentElement.hasAttribute('data-snc-editing'), false);
+    files.querySelector('button[data-sidebar-right-guide-entry]').click();
+    assert.equal(opened, 1, 'the original host button works after teardown');
+    doc.body.insertAdjacentHTML('beforeend', rightGuide());
+    await flush();
+    const late = [...doc.querySelectorAll('[data-sidebar-right-guide]')][1];
+    assert.equal(late.querySelector('.snc-ctl, [data-snc-hidden], [data-snc-editing]'), null, 'the observer was removed');
+  } finally {
+    if (!disposed) dispose();
+  }
+});
+
+test('guide move buttons reorder without dragging, toggling or opening the tool', () => {
+  const { doc, dom, dispose } = start(navigation() + rightGuide());
+  try {
+    gear(doc).click();
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    const files = rightUnit(guide, 'kind:files');
+    const terminal = rightUnit(guide, 'kind:terminal');
+    const up = (unit) => unit.querySelector('[data-snc-move="-1"]');
+    const down = (unit) => unit.querySelector('[data-snc-move="1"]');
+    let opened = 0;
+    terminal.querySelector('.terminal_main').addEventListener('click', () => { opened += 1; });
+    assert.equal(up(files).disabled, true, 'first card cannot move further up');
+    assert.equal(down(rightUnit(guide, 'action:more')).disabled, true, 'last card cannot move further down');
+    assert.equal(up(terminal).getAttribute('aria-label'), '上移终端');
+    up(terminal).click();
+    assert.deepEqual(rightOrder(guide), ['kind:terminal', 'kind:files', 'kind:git', 'kind:browser', 'action:more']);
+    assert.deepEqual(stateOf(dom.window).orderRight, rightOrder(guide));
+    assert.equal(up(terminal).disabled, true);
+    down(terminal).click();
+    assert.deepEqual(rightOrder(guide), defaultRightOrder);
+    assert.deepEqual(stateOf(dom.window).right, [], 'moving never toggles visibility');
+    assert.equal(opened, 0, 'moving never opens the host tool');
+    assert.deepEqual(stateOf(dom.window).order, [], 'left order remains independent');
+  } finally {
+    dispose();
+  }
+});
+
+test('guide move buttons preserve focus for repeated keyboard moves', () => {
+  const { doc, dispose } = start(navigation() + rightGuide());
+  try {
+    gear(doc).click();
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    const git = rightUnit(guide, 'kind:git');
+    const up = git.querySelector('[data-snc-move="-1"]');
+    const down = git.querySelector('[data-snc-move="1"]');
+    up.focus();
+    up.click();
+    assert.equal(doc.activeElement, up, 'focus survives the DOM move');
+    doc.activeElement.click();
+    assert.equal(rightOrder(guide)[0], 'kind:git', 'the same control can move the card twice');
+    assert.equal(doc.activeElement, down, 'at the edge focus moves to the available direction');
+  } finally {
+    dispose();
+  }
+});
+
+test('the composite terminal launch button and shell menu stay inert while editing', () => {
+  const { doc, dom, dispose } = start(navigation() + rightGuide());
+  try {
+    const terminal = rightUnit(doc.querySelector('[data-sidebar-right-guide]'), 'kind:terminal');
+    const launch = terminal.querySelector('.terminal_main');
+    const shellMenu = terminal.querySelector('.terminal_trigger');
+    let opened = 0;
+    launch.addEventListener('click', () => { opened += 1; });
+    shellMenu.addEventListener('click', () => { opened += 1; });
+    gear(doc).click();
+    assert.equal(rightBox(terminal).getAttribute('aria-label'), '终端 显示');
+    launch.click();
+    assert.deepEqual(stateOf(dom.window).right, ['kind:terminal']);
+    shellMenu.click();
+    assert.deepEqual(stateOf(dom.window).right, []);
+    assert.equal(opened, 0, 'editing clicks never launch a process or open the shell menu');
+    gear(doc).click();
+    launch.click();
+    shellMenu.click();
+    assert.equal(opened, 2, 'both native actions work after editing');
+  } finally {
+    dispose();
+  }
+});
+
+test('a guide entry losing its marker cannot change more-tools preferences or keep stale controls', async () => {
+  const { doc, dom, dispose } = start(navigation() + rightGuide(), rec({ right: ['kind:files'] }));
+  try {
+    gear(doc).click();
+    const guide = doc.querySelector('[data-sidebar-right-guide]');
+    const files = rightUnit(guide, 'kind:files');
+    const staleBox = rightBox(files);
+    files.querySelector('[data-sidebar-right-guide-entry]').removeAttribute('data-sidebar-right-guide-entry');
+    staleBox.checked = false;
+    staleBox.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+    assert.deepEqual(stateOf(dom.window).right, ['kind:files'], 'a stale control never aliases action:more');
+    await flush();
+    assert.equal(files.querySelector('.snc-ctl'), null);
+    assert.equal(files.hasAttribute('data-snc-hidden'), false);
+    assert.ok(rightBox(rightUnit(guide, 'action:more')).checked, 'More tools remains visible');
+  } finally {
+    dispose();
+  }
 });

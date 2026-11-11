@@ -30,6 +30,9 @@
       > button[class*="panelRow"][aria-label="<name>"]   the rows
     div[data-conversation-tabs]
       > button[role="tab"][aria-selected]                the view tabs
+    div[data-sidebar-right-guide]
+      > div[class*="entryCell"] > [data-sidebar-right-guide-entry]
+      > span[class*="moreAnchor"] > button[aria-haspopup="menu"]
 -->
 <style>
   /* ---- host shell, not part of the plugin ----
@@ -57,7 +60,31 @@
     --dsw-radius-sm: 8px;
   }
 
-  .app { display: flex; height: 640px; width: 1024px; margin: 0; background: #fff; }
+  .app { display: flex; height: 640px; width: 1280px; margin: 0; background: #fff; }
+
+  /* DSH 0.2.2-rc.1 GuideBody: direct entryCell and moreAnchor children. */
+  .right { width: 340px; flex: none; padding: 1rem; border-left: 1px solid var(--dsw-alias-border-l1); }
+  .geFEbW_guide { display: flex; flex-direction: column; align-items: center; gap: .75rem; }
+  .geFEbW_hero { margin: .75rem 0; color: var(--dsw-alias-label-tertiary); }
+  .geFEbW_entryCell, .geFEbW_moreAnchor { width: 100%; max-width: 380px; }
+  .geFEbW_moreAnchor { display: flex; }
+  .geFEbW_entry {
+    display: flex; align-items: center; gap: .75rem; width: 100%; min-width: 0;
+    min-height: 56px; padding: .75rem 1rem; text-align: left;
+    border: 1px solid var(--dsw-alias-border-l1); border-radius: var(--dsw-radius-md);
+    background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary);
+    font: inherit; cursor: pointer;
+  }
+  .geFEbW_entry:hover { background: #2631480a; }
+  .terminal_entry { position: relative; }
+  .terminal_main { position: absolute; inset: 0; border: 0; border-radius: inherit; background: transparent; cursor: pointer; }
+  .terminal_titleRow { display: flex; align-items: center; gap: .5rem; }
+  .terminal_entry > .geFEbW_entryText { pointer-events: none; }
+  .terminal_menu { position: relative; pointer-events: auto; }
+  .terminal_trigger { display: flex; padding: .25rem; border: 0; background: transparent; color: inherit; cursor: pointer; }
+  .geFEbW_entryText { min-width: 0; }
+  .geFEbW_entryTitle { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .geFEbW_entryDescription { display: block; font-size: .875rem; }
 
   /* ---------------- sidebar ---------------- */
   .side {
@@ -275,6 +302,19 @@
       <div class="footnote">示意画面 · 运行真实插件 · 面板与项目名均为虚构数据</div>
     </div>
   </div>
+
+  <aside class="right">
+    <div class="geFEbW_guide" data-sidebar-right-guide>
+      <span class="geFEbW_hero" aria-hidden="true">
+        <svg width="40" height="40" viewBox="0 0 40 40" fill="none"><circle cx="20" cy="20" r="17" stroke="currentColor" stroke-width="2"/><path d="m26 13-4 11-9 4 4-11z" fill="currentColor"/></svg>
+      </span>
+      <div class="geFEbW_entryCell"><button class="geFEbW_entry" data-sidebar-right-guide-entry="files"><span class="geFEbW_entryText"><span class="geFEbW_entryTitle">文件</span></span></button></div>
+      <div class="geFEbW_entryCell"><div class="geFEbW_entry terminal_entry" data-sidebar-right-guide-entry="terminal"><button type="button" class="terminal_main" aria-label="新建终端"></button><span class="geFEbW_entryText"><span class="terminal_titleRow"><span class="terminal_title" aria-hidden="true">新建终端</span><span class="terminal_menu"><button type="button" class="terminal_trigger" aria-label="选择 shell" aria-haspopup="menu" aria-expanded="false"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="m3 5 4 4 4-4" stroke="currentColor"/></svg></button></span></span></span></div></div>
+      <div class="geFEbW_entryCell"><button class="geFEbW_entry" data-sidebar-right-guide-entry="git"><span class="geFEbW_entryText"><span class="geFEbW_entryTitle">Git</span></span></button></div>
+      <div class="geFEbW_entryCell"><button class="geFEbW_entry" data-sidebar-right-guide-entry="browser"><span class="geFEbW_entryText"><span class="geFEbW_entryTitle">浏览器</span></span></button></div>
+      <span class="geFEbW_moreAnchor"><button class="geFEbW_entry" aria-label="更多工具" aria-haspopup="menu" aria-expanded="false"><span class="geFEbW_entryText"><span class="geFEbW_entryTitle">更多工具</span></span></button></span>
+    </div>
+  </aside>
 </div>
 
 <!-- scripted pointer; driven by the timeline, never dispatches events itself -->
