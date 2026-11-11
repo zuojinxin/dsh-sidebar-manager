@@ -64,11 +64,11 @@ test('wraps the host panel list and adds a group row plus a gear', () => {
   assert.ok(nav, 'host nav moved under the wrapper');
   assert.equal(nav.children.length, 6, 'host nav keeps only its own rows');
   assert.equal(shell.parentElement.tagName, 'BODY');
-  // group row mirrors a native panelRow box model
+  // group row mirrors a native panelRow box model (rc.2: 32px, 5px padding)
   const css = cssOf(doc);
   const groupRule = css.slice(css.indexOf('.snc-group {'), css.indexOf('}', css.indexOf('.snc-group {')));
-  assert.match(groupRule, /min-height:\s*36px/);
-  assert.match(groupRule, /padding:\s*7px 8px/);
+  assert.match(groupRule, /min-height:\s*32px/);
+  assert.match(groupRule, /padding:\s*5px\s+calc\(/);
   // gap 0: the caption takes the free width, so the two icons sit flush right
   assert.match(groupRule, /gap:\s*0/);
   assert.match(groupRule, /border-radius:\s*var\(--dsw-radius-md,\s*12px\)/);
@@ -80,6 +80,44 @@ test('wraps the host panel list and adds a group row plus a gear', () => {
   assert.match(gearRule, /border-radius:\s*var\(--dsw-radius-sm,\s*6px\)/);
   // no colour is hardcoded: everything is a live theme token with a fallback
   assert.match(gearRule, /--dsw-alias-label-tertiary/);
+  dispose();
+});
+
+/* 0.2.2-rc.2 rebuilt the sidebar scroll body as a placed CSS Grid: .scrollArea
+   carries grid-template-columns 4px minmax(0,1fr) … / grid-template-rows
+   8px max-content 2px max-content, and the host's own two children claim their
+   cells (.panelList 2/2, .regionArea 2/4). An unplaced wrapper auto-flows into
+   column 1 (the 4px gutter) and row 1 (8px), which is what squeezed the whole
+   list into a strip over the caption and made it unclickable. The wrapper must
+   therefore carry the list's cell, and rc.1's flex host must be unaffected:
+   a flex item ignores grid-column/grid-row, so the same rule is inert there. */
+const grid = (names = ['插件', '自动化任务', '任务看板']) =>
+  `<div class="scrollArea" style="display:grid;grid-template-columns:4px minmax(0,1fr) 6px;grid-template-rows:8px max-content 2px max-content">` +
+  `<nav class="_2H3hWW_panelList" aria-label="全局面板" style="grid-column:2;grid-row:2">${names.map(panel).join('')}</nav>` +
+  `</div>`;
+
+test('the wrapper takes the cell the host gave the panel list', () => {
+  const { doc, dispose } = start(grid());
+  const css = cssOf(doc);
+  const shellRule = css.slice(css.indexOf('.snc-shell {'), css.indexOf('}', css.indexOf('.snc-shell {')));
+  /* the default placement is the panel list's own cell on 0.2.2-rc.2 */
+  assert.match(shellRule, /grid-column:\s*2/, 'column 2 is the content column, not the 4px gutter');
+  assert.match(shellRule, /grid-row:\s*2/, 'row 2 is the list row, not the 8px spacer');
+  /* and the live placement of the host list is mirrored onto the wrapper, so a
+     host that ever moves the list to another cell drags the wrapper with it */
+  const shell = shadow(doc);
+  assert.equal(shell.style.gridColumn, '2');
+  assert.equal(shell.style.gridRow, '2');
+  dispose();
+});
+
+test('on a flex host the placement copy stays out of the way', () => {
+  /* rc.1 hosts the list in a plain column flex; computed placement is "auto"
+     there, and writing that inline would override the stylesheet's default */
+  const { doc, dispose } = start();
+  const shell = shadow(doc);
+  assert.equal(shell.style.gridColumn, '', 'no inline override on a flex host');
+  assert.equal(shell.style.gridRow, '', 'no inline override on a flex host');
   dispose();
 });
 
@@ -233,14 +271,18 @@ test('the caption sits on the section-label indent, not on the row indent', () =
   const { doc, dispose } = start(both());
   const css = cssOf(doc);
   const grp = css.slice(css.indexOf('.snc-group {'), css.indexOf('}', css.indexOf('.snc-group {')));
-  /* Measured off a real sidebar screenshot: the native "工作区" heading starts at
-     x=17 while this caption sat at x=22, so it read as out of column. The box
-     keeps the row's 2px margin so the hover fill stays row-wide, and gives up
-     5px of leading padding instead of widening or shifting the box. */
-  assert.match(grp, /margin:\s*0\s*2px/, 'the box still lines up with a panel row');
-  assert.match(grp, /padding:\s*7px\s+8px\s+7px\s+3px/, 'the label starts 5px further left');
-  const pad = grp.match(/padding:\s*7px\s+8px\s+7px\s+(\d+)px/);
-  assert.equal(Number(pad[1]), 3, '2px margin + 3px padding = the 5px section indent');
+  /* rc.2 puts the native "工作区" heading at 9px (row-padding 12 - paint-inset 3)
+     and a panel row's text at 12px, because that row draws 3px of transparent
+     border-inline on top of the same 9px padding. The caption keeps the row's
+     width -- margin 0 plus the same 3px transparent border, so the hover fill
+     stays row-wide -- and gives back those 3px of leading padding instead. */
+  assert.match(grp, /margin:\s*0;/, 'no extra margin: the box is exactly a row wide');
+  assert.match(grp, /border-inline:\s*var\(--dsh-sidebar-paint-inset,\s*3px\)\s+solid\s+transparent/,
+    'the row border that makes the box a full row wide is kept');
+  assert.match(grp, /padding:\s*5px\s+calc\(var\(--dsh-sidebar-row-padding,\s*12px\)\s*-\s*var\(--dsh-sidebar-paint-inset,\s*3px\)\)/,
+    'the row padding is the live token, not a mirrored number');
+  assert.match(grp, /padding-left:\s*calc\(var\(--dsh-sidebar-row-padding,\s*12px\)\s*-\s*var\(--dsh-sidebar-paint-inset,\s*3px\)\s*-\s*3px\)/,
+    '3px of leading padding go back, landing the label on the section indent');
   dispose();
 });
 

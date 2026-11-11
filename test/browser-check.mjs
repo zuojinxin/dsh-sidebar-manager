@@ -27,13 +27,22 @@ const EDGE = process.env.SNC_EDGE ||
   'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe';
 const STORE = 'dsh-sidebar-nav-collapse:state';
 
-/* ---- the fixture: DSH's panel list as 0.2.1-rc.3 emits it ----
+/* ---- the fixture: DSH's panel list as 0.2.2-rc.2 emits it ----
    The class prefix is the build's own (`wtg9ga_`); the plugin matches on the
    key fragment (`panelList` / `panelRow` / `moreAnchor`), so using the real
-   prefix also proves it does not depend on a particular hash. */
+   prefix also proves it does not depend on a particular hash.
+
+   Since 0.2.2-rc.2 the sidebar scroll body is a CSS Grid with explicit
+   placement, not a flex column: .scrollArea carries
+   grid-template-columns 4px minmax(0,1fr) …, grid-template-rows
+   8px max-content 2px max-content, and its two host children claim their cells
+   (.panelList 2/2, .regionArea 2/4). An unplaced child auto-flows into that 4px
+   gutter and the 8px first row -- which is exactly how the wrapper broke, so the
+   fixture has to reproduce the grid or the check cannot see the failure at all. */
 const row = (label) =>
   `<button type="button" class="wtg9ga_panelRow" aria-label="${label}">` +
   `<span class="wtg9ga_panelGlyph">▦</span><span class="wtg9ga_panelTitle">${label}</span></button>`;
+const entry = (label) => `<div class="wtg9ga_panelEntry wtg9ga_panelEntryWide">${row(label)}</div>`;
 const moreRow = (label = '更多') =>
   `<span class="wtg9ga_moreAnchor"><button type="button" class="wtg9ga_panelRow" aria-label="${label}" ` +
   `aria-haspopup="menu" aria-expanded="false"><span class="wtg9ga_panelGlyph">▦</span>` +
@@ -45,16 +54,41 @@ const page = (record) => `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>panel list fixture</title>
 <style>
   body { margin: 0; font: 13px/1.4 system-ui, sans-serif; }
-  #side { width: 269px; padding: 8px; }
+  /* the host sidebar root defines these tokens; rows and our group row read them */
+  #side { width: 269px; padding: 8px;
+    --dsh-sidebar-inline-padding: 8px; --dsh-sidebar-row-padding: 12px;
+    --dsh-sidebar-label-gap: 6px; --dsh-sidebar-paint-inset: 3px; }
   /* copied from SidebarRoot.module.css: the drag path reads these boxes */
-  .wtg9ga_panelList { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
-  .wtg9ga_panelRow { box-sizing: border-box; display: flex; align-items: center; gap: 8px;
-    min-height: 36px; margin: 0 2px; padding: 7px 8px; border: none; background: 0 0;
+  .wtg9ga_scrollRegion { position: relative; display: flex; flex-direction: column; }
+  .wtg9ga_scrollArea {
+    display: grid;
+    grid-template-columns: 4px minmax(0, 1fr) calc(var(--dsh-sidebar-inline-padding) - 2px);
+    grid-template-rows: 8px max-content 2px max-content;
+    align-content: start;
+    margin-left: -4px; margin-right: calc(2px - var(--dsh-sidebar-inline-padding));
+    overflow-x: hidden; overflow-y: auto;
+  }
+  .wtg9ga_scrollArea::before, .wtg9ga_scrollArea::after { content: ''; grid-column: 2; pointer-events: none; }
+  .wtg9ga_scrollArea::before { grid-row: 1; }
+  .wtg9ga_scrollArea::after { grid-row: 3; }
+  .wtg9ga_panelList { grid-column: 2; grid-row: 2;
+    flex: none; display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+  .wtg9ga_panelEntry { position: relative; display: flex;
+    border-inline: var(--dsh-sidebar-paint-inset) solid transparent; }
+  .wtg9ga_panelRow { box-sizing: border-box; display: flex; align-items: center;
+    gap: var(--dsh-sidebar-label-gap);
+    min-height: 32px; margin: 0;
+    padding: 5px calc(var(--dsh-sidebar-row-padding) - var(--dsh-sidebar-paint-inset));
+    border: none; border-inline: var(--dsh-sidebar-paint-inset) solid transparent;
+    background: 0 0; background-clip: padding-box;
     border-radius: 12px; font: inherit; line-height: 22px; text-align: left; cursor: pointer; }
   .wtg9ga_panelRow:hover { background: rgba(0, 0, 0, .06); }
   .wtg9ga_moreAnchor { display: flex; flex-direction: column; }
   .wtg9ga_panelGlyph { flex: none; display: inline-flex; align-items: center; justify-content: center; }
   .wtg9ga_panelTitle { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .wtg9ga_regionArea { grid-column: 2; grid-row: 4; min-height: 0; min-width: 0;
+    display: flex; flex-direction: column; }
+  #workspaces { min-height: 240px; }
   /* copied from the conversation header: the view row and its "..." launcher */
   #chat { width: 620px; padding: 8px; }
   .an3WzG_tabs { position: relative; display: flex; flex-wrap: wrap; align-items: flex-start;
@@ -68,11 +102,15 @@ const page = (record) => `<!doctype html>
 </style></head>
 <body>
 <div id="side">
-  <nav class="wtg9ga_panelList" aria-label="全局面板">
-    ${PANELS.map(row).join('')}
-    ${moreRow()}
-  </nav>
-  <div id="workspaces">workspace / sessions</div>
+  <div class="wtg9ga_scrollRegion">
+    <div class="wtg9ga_scrollArea">
+      <nav class="wtg9ga_panelList" aria-label="全局面板">
+        ${PANELS.map(entry).join('')}
+        ${moreRow()}
+      </nav>
+      <div class="wtg9ga_regionArea" id="workspaces">workspace / sessions</div>
+    </div>
+  </div>
 </div>
 <div id="chat">
   <div class="an3WzG_tabs">
@@ -190,8 +228,14 @@ try {
     const nav = document.querySelector('nav[class*="panelList"]');
     const anchor = document.querySelector('[class*="moreAnchor"]');
     const label = (el) => (el.getAttribute('aria-label') || el.querySelector('button[class*="panelRow"]')?.getAttribute('aria-label') || '').trim();
-    const bare = [...nav.querySelectorAll('button[class*="panelRow"]')]
-      .find((b) => b.getAttribute('aria-label') === '任务看板');
+    /* 0.2.2-rc.2 wraps every pinned row in div.panelEntry (the unpin button and
+       the row's own paint box live there), so "the unit" is the nav's direct
+       child, never the button: that is where our controls go. */
+    const unitOf = (name) => [...nav.children]
+      .find((el) => el.getAttribute('aria-label') === name ||
+        el.querySelector(':scope > button[class*="panelRow"][aria-label="' + name + '"]'));
+    const bareUnit = unitOf('任务看板');
+    const bare = bareUnit?.querySelector('button[class*="panelRow"]');
     return {
       order: [...nav.children].map(label),
       anchorParent: anchor.parentElement.tagName,
@@ -202,8 +246,7 @@ try {
       /* the anchor has no margin or padding of its own, so the controls inside
          it must be told where the rows above and below start */
       align: (() => {
-        const row = [...nav.querySelectorAll('button[class*="panelRow"]')]
-          .find((b) => b.getAttribute('aria-label') === '插件');
+        const rowUnit = unitOf('插件');
         const at = (unit, sel) => {
           const node = unit?.querySelector(sel);
           if (!node) return null;
@@ -214,11 +257,11 @@ try {
           return { left: Math.round(r.left), dy: Math.round((r.top + r.height / 2) - (u.top + u.height / 2)) };
         };
         return {
-          bareBox: at(row, ':scope > .snc-ctl > [data-snc-check]'),
+          bareBox: at(rowUnit, ':scope > .snc-ctl > [data-snc-check]'),
           moreBox: at(anchor, ':scope > .snc-ctl > [data-snc-check]'),
-          bareGrip: at(row, ':scope > .snc-ctl > [data-snc-drag]'),
+          bareGrip: at(rowUnit, ':scope > .snc-ctl > [data-snc-drag]'),
           moreGrip: at(anchor, ':scope > .snc-ctl > [data-snc-drag]'),
-          bareTitle: at(row, '[class*="panelTitle"]'),
+          bareTitle: at(rowUnit, '[class*="panelTitle"]'),
           moreTitle: at(anchor, '[class*="panelTitle"]'),
         };
       })(),
@@ -227,10 +270,11 @@ try {
       anchorDisplay: getComputedStyle(anchor).display,
       anchorOpacity: getComputedStyle(anchor).opacity,
       hiddenFlag: anchor.dataset.sncHidden || null,
-      bareFlag: bare?.dataset.sncHidden || null,
-      bareInNav: !!bare && bare.parentElement === nav,
-      bareCtl: !!bare?.querySelector(':scope > .snc-ctl'),
-      bareDisplay: bare ? getComputedStyle(bare).display : null,
+      bareFlag: bareUnit?.dataset.sncHidden || null,
+      bareInNav: !!bareUnit && bareUnit.parentElement === nav,
+      bareCtl: !!bareUnit?.querySelector(':scope > .snc-ctl'),
+      bareDisplay: bareUnit ? getComputedStyle(bareUnit).display : null,
+      bareEntry: !!bareUnit && bareUnit !== bare,
       stored: JSON.parse(localStorage.getItem(${JSON.stringify(STORE)}) || 'null'),
       viewRow: (() => {
         const strip = document.querySelector('div[data-conversation-tabs]');
@@ -339,18 +383,20 @@ try {
   await evaluate(`document.querySelector('.snc-bud').click()`);
   await new Promise((r) => setTimeout(r, 80));
   await evaluate(`(() => {
-    const row = [...document.querySelectorAll('button[class*="panelRow"]')]
-      .find((b) => b.getAttribute('aria-label') === '任务看板');
-    const box = row.querySelector(':scope > .snc-ctl > [data-snc-check]');
+    const nav = document.querySelector('nav[class*="panelList"]');
+    // rc.2 puts the row inside div.panelEntry, so the unit is that div
+    const unit = [...nav.children].find((el) => el.querySelector('button[class*="panelRow"][aria-label="任务看板"]'));
+    const box = unit.querySelector(':scope > .snc-ctl > [data-snc-check]');
     box.checked = false;
     box.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
   await new Promise((r) => setTimeout(r, 260));
   s = await snapshot();
-  check('a bare row is flagged on the row itself, not on its wrapper', () => {
+  check('a bare row is flagged on its unit, not on the button', () => {
     assert.deepEqual(s.stored.hidden, ['任务看板']);
-    assert.equal(s.bareFlag, 'true', 'the flag is on the button');
-    assert.equal(s.bareInNav, true, 'and the row is still a child of the list');
+    assert.equal(s.bareEntry, true, 'the row sits in an entry wrapper');
+    assert.equal(s.bareFlag, 'true', 'the flag goes on the unit the host owns');
+    assert.equal(s.bareInNav, true, 'and the unit is still a child of the list');
   }, () => s);
   await evaluate(`document.querySelector('.snc-bud').click()`);
   await new Promise((r) => setTimeout(r, 120));
@@ -396,7 +442,7 @@ try {
     assert.equal(s.order[0], '更多');
     assert.equal(s.stored.order[0], '更多', 'the drag was committed to the record');
     assert.equal(s.stored.order.length, PANELS.length + 1, 'every unit is in the saved list');
-  });
+  }, () => ({ order: s.order, stored: s.stored.order }));
 
   /* ---- 8. the view row's "..." launcher: a sibling of the tablist ---- */
   s = await snapshot();
@@ -442,13 +488,15 @@ try {
   await new Promise((r) => setTimeout(r, 80));
   const rerender = await evaluate(`(() => {
     const nav = document.querySelector('nav[class*="panelList"]');
-    const row = [...nav.querySelectorAll('button[class*="panelRow"]')]
-      .find((b) => b.getAttribute('aria-label') === '上下文洞察');
-    const next = row.nextElementSibling;
+    // React owns the nav's children, and on 0.2.2-rc.2 a row's child is the
+    // entry wrapper, not the button: remove and re-insert the unit itself
+    const unit = [...nav.children]
+      .find((el) => el.querySelector('button[class*="panelRow"][aria-label="上下文洞察"]'));
+    const next = unit.nextElementSibling;
     let threw = null;
     try {
-      nav.removeChild(row);
-      nav.insertBefore(row.cloneNode(true), next);
+      nav.removeChild(unit);
+      nav.insertBefore(unit.cloneNode(true), next);
     } catch (error) { threw = String(error); }
     return {
       threw,
