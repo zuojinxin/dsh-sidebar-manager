@@ -69,14 +69,15 @@ test('wraps the host panel list and adds a group row plus a gear', () => {
   const groupRule = css.slice(css.indexOf('.snc-group {'), css.indexOf('}', css.indexOf('.snc-group {')));
   assert.match(groupRule, /min-height:\s*32px/);
   assert.match(groupRule, /padding:\s*5px\s+calc\(/);
-  // gap 0: the caption takes the free width, so the two icons sit flush right
-  assert.match(groupRule, /gap:\s*0/);
+  // the host's own headerActions run a 4px gap between 28px boxes; mirroring
+  // that is what lands our two glyphs on the host's icon rails
+  assert.match(groupRule, /gap:\s*4px/);
   assert.match(groupRule, /border-radius:\s*var\(--dsw-radius-md,\s*12px\)/);
-  // the gear is a 20px press target next to the 20px chevron: the dead zone
-  // between them is what keeps settings and fold from being hit by one press
+  // the two press targets are the host's 28px boxes: same size as the "视图选项"
+  // / "添加工作区" icon buttons, so their 14px glyphs share those buttons' rails
   const gearRule = css.slice(css.indexOf('.snc-bud,\n.snc-chev {'), css.indexOf('}', css.indexOf('.snc-bud,\n.snc-chev {')));
-  assert.match(gearRule, /width:\s*20px/);
-  assert.match(gearRule, /height:\s*20px/);
+  assert.match(gearRule, /width:\s*28px/);
+  assert.match(gearRule, /height:\s*28px/);
   assert.match(gearRule, /border-radius:\s*var\(--dsw-radius-sm,\s*6px\)/);
   // no colour is hardcoded: everything is a live theme token with a fallback
   assert.match(gearRule, /--dsw-alias-label-tertiary/);
@@ -173,8 +174,11 @@ test('the chevron reflects the fold state, the row is what folds', () => {
   assert.equal(chev.getAttribute('aria-hidden'), 'true');
   assert.equal(chev.tabIndex, -1);
   assert.equal(chev.tagName, 'BUTTON', 'a button so the fold can also be pressed on it');
-  /* the row's own attribute drives the rotation, so CSS needs no JS repaint */
-  assert.match(cssOf(doc), /\.snc-group\[aria-expanded="false"\]\s*\.snc-chev\s*\{\s*transform:\s*rotate\(-90deg\)/);
+  /* the row's own attribute drives the rotation, so CSS needs no JS repaint.
+     The turn is on the svg, not on the button: rotating the button would swing
+     its padding-right round into a vertical offset and drop the arrow off the
+     caption's centre line. */
+  assert.match(cssOf(doc), /\.snc-group\[aria-expanded="false"\]\s*\.snc-chev\s*>\s*svg\s*\{\s*transform:\s*rotate\(-90deg\)/);
   assert.equal(row.dataset.sncFolded, 'false');
   /* a press that lands on the chevron still folds: it bubbles to the row */
   chev.click();
@@ -271,21 +275,50 @@ test('the caption sits on the section-label indent, not on the row indent', () =
   const { doc, dispose } = start(both());
   const css = cssOf(doc);
   const grp = css.slice(css.indexOf('.snc-group {'), css.indexOf('}', css.indexOf('.snc-group {')));
-  /* rc.2 puts the native "工作区" heading at 9px (row-padding 12 - paint-inset 3)
-     and a panel row's text at 12px, because that row draws 3px of transparent
-     border-inline on top of the same 9px padding. The caption keeps the row's
-     width -- margin 0 plus the same 3px transparent border, so the hover fill
-     stays row-wide -- and gives back those 3px of leading padding instead. */
+  /* The host does not align its section heading the way it aligns its rows. In
+     rc.2 a .panelRow starts its glyph at 12px (3px transparent border-inline plus
+     9px padding), but the native "工作区" heading starts at 11px: .sectionHeader
+     takes the full 12px row padding as plain padding-left with no painted border
+     (WorkspaceBrowser.module.css:66-79) and .sectionLabel then pulls itself 1px
+     left with left:-1px (:93-95). So the caption keeps the row's width -- margin 0
+     plus the same 3px transparent border, so the hover fill stays row-wide -- and
+     gives back exactly one pixel of leading padding instead of three. */
   assert.match(grp, /margin:\s*0;/, 'no extra margin: the box is exactly a row wide');
   assert.match(grp, /border-inline:\s*var\(--dsh-sidebar-paint-inset,\s*3px\)\s+solid\s+transparent/,
     'the row border that makes the box a full row wide is kept');
   assert.match(grp, /padding:\s*5px\s+calc\(var\(--dsh-sidebar-row-padding,\s*12px\)\s*-\s*var\(--dsh-sidebar-paint-inset,\s*3px\)\)/,
     'the row padding is the live token, not a mirrored number');
-  assert.match(grp, /padding-left:\s*calc\(var\(--dsh-sidebar-row-padding,\s*12px\)\s*-\s*var\(--dsh-sidebar-paint-inset,\s*3px\)\s*-\s*3px\)/,
-    '3px of leading padding go back, landing the label on the section indent');
+  assert.match(grp, /padding-left:\s*calc\(var\(--dsh-sidebar-row-padding,\s*12px\)\s*-\s*var\(--dsh-sidebar-paint-inset,\s*3px\)\s*-\s*1px\)/,
+    '1px of leading padding goes back, landing the label on the section indent');
   dispose();
 });
 
+test('the chevron ink lands on the host icon rail, not just its box', () => {
+  const { doc, dispose } = start(both());
+  const css = cssOf(doc);
+  const at = css.lastIndexOf('.snc-chev {');
+  const chev = css.slice(at, css.indexOf('}', at) + 1);
+  const budAt = css.indexOf('.snc-bud { margin-right');
+  const bud = css.slice(budAt, css.indexOf('\n', budAt));
+  /* Equal boxes is not equal pixels. The host's 16px action glyphs keep ~1px of
+     slack inside their 16px viewBox (project-add-outline ends its ink at 15.05,
+     so 6.95px from the 28px box edge), while a narrow 5.4..8.9 chevron path ends
+     at 9.6 of 14 (11.4px in): equal 28px boxes left the arrow's ink 4.45px short
+     of "添加工作区"'s. Padding the glyph out to the box edge closes that gap but
+     leaves an off-centre arrow, so the glyph itself is widened to 1.5..12.5 --
+     ink at 13.2 of 14, 7.4px in, within half a pixel of the host. Both pockets
+     stay the host's 28x28, both glyphs stay centred. */
+  assert.match(chev, /width:\s*28px/, 'the host 28px pocket, not a special size for this row');
+  assert.match(chev, /height:\s*28px/, 'square pocket: a 28x20 box paints a rectangle on hover');
+  assert.match(chev, /margin-right:\s*calc\(1px - var\(--dsh-sidebar-paint-inset,\s*3px\)\)/,
+    'the row border less the 1px the header sits inside the column');
+  assert.doesNotMatch(chev, /justify-content:\s*flex-end/, 'the glyph stays centred, not shoved to the edge');
+  assert.doesNotMatch(chev, /padding-right/, 'no padding hack: the widened path does the work');
+  assert.match(bud, /margin-right:\s*0/, 'the gear follows 28 + 4 straight onto 视图选项');
+  const path = doc.querySelector('.snc-chev path').getAttribute('d');
+  assert.match(path, /^M1\.5 4\.5 7 10 12\.5 4\.5$/, 'the arrow spans its viewBox, unlike the narrow original');
+  dispose();
+});
 test('the gear is inside the group row, just before the chevron', () => {
   const { doc, dispose } = start();
   assert.equal(gear(doc).parentElement, group(doc), 'gear lives in the group row, not the nav');

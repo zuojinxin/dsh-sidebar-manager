@@ -50,6 +50,29 @@ const moreRow = (label = '更多') =>
 const PANELS = ['插件', '插件市场', '任务看板', '上下文洞察', '自动化任务'];
 const VIEWS = ['对话', '上下页', '画廊'];
 
+/* ---- the host's real action glyphs, copied out of the DSH build --------------
+   These are not decoration: the whole point of the rail check below is that
+   aligning boxes is not the same as aligning pixels, and that only shows up if
+   the fixture draws the host's actual ink. `project-add-outline` ends its stroke
+   at x=14.55 of a 16px viewBox (so 15.05 after the 0.5px half-stroke), and
+   `sliders-two-outline` at 14.2 -- a plain circle at r=7 would end at 15 and
+   quietly make a wrong CSS look right. */
+const ICON_ADD =
+  '<svg viewBox="0 0 16 16" fill="none" stroke-width="1" aria-hidden="true">' +
+  '<path d="M5.54492 2.06738C5.91034 2.06738 6.20654 2.36359 6.20654 2.729" stroke="currentColor"/>' +
+  '<path d="M9.75977 4.50208H14.5509" stroke="currentColor"/>' +
+  '<path d="M12.1492 6.89758L12.1492 2.10642" stroke="currentColor"/></svg>';
+const ICON_SLIDERS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke-width="1" stroke-linecap="round" aria-hidden="true">' +
+  '<path d="M2.3 5h5.85M12.05 5h1.65" stroke="currentColor"/>' +
+  '<circle cx="9.95" cy="5" r="1.45" stroke="currentColor"/>' +
+  '<path d="M2.3 11h1.65M7.85 11h5.85" stroke="currentColor"/>' +
+  '<circle cx="5.75" cy="11" r="1.45" stroke="currentColor"/></svg>';
+const ICON_GLASS =
+  '<svg viewBox="0 0 16 16" fill="none" stroke-width="1" stroke-linecap="round" aria-hidden="true">' +
+  '<circle cx="7.1" cy="7.1" r="4.6" stroke="currentColor"/>' +
+  '<path d="M10.5 10.5 14 14" stroke="currentColor"/></svg>';
+
 const page = (record) => `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>panel list fixture</title>
 <style>
@@ -89,6 +112,24 @@ const page = (record) => `<!doctype html>
   .wtg9ga_regionArea { grid-column: 2; grid-row: 4; min-height: 0; min-width: 0;
     display: flex; flex-direction: column; }
   #workspaces { min-height: 240px; }
+  /* copied from WorkspaceBrowser.module.css: the "工作区" section header. The
+     plugin has to line up with THIS header, so the fixture has to carry it --
+     the caption sits on its label's left edge, the two action boxes on its two
+     icon buttons' rails. Sizes are the host's: 28px icon boxes, a 4px gap, 16px
+     glyphs, padding-left 12px with no painted border, the label pulled 1px left,
+     and the header bleeding 3px past the content column. */
+  .wb_sectionHeader { box-sizing: border-box; display: flex; align-items: center;
+    justify-content: flex-end; gap: 4px; height: 36px;
+    padding-left: var(--dsh-sidebar-row-padding);
+    border-radius: 12px; overflow: hidden;
+    padding-right: 1px; }
+  .wb_sectionLabel { position: relative; left: -1px; max-width: 45%; line-height: 20px; }
+  .wb_searchSlot { display: flex; align-items: center; margin-left: auto; max-width: 28px; }
+  .wb_headerActions { display: flex; align-items: center; gap: 4px; max-width: 60px; }
+  .wb_iconButton { flex: none; box-sizing: border-box; display: inline-flex;
+    align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
+    border: 0; border-radius: 6px; background: 0 0; cursor: pointer; }
+  .wb_iconButton > svg { display: block; width: 16px; height: 16px; }
   /* copied from the conversation header: the view row and its "..." launcher */
   #chat { width: 620px; padding: 8px; }
   .an3WzG_tabs { position: relative; display: flex; flex-wrap: wrap; align-items: flex-start;
@@ -108,7 +149,17 @@ const page = (record) => `<!doctype html>
         ${PANELS.map(entry).join('')}
         ${moreRow()}
       </nav>
-      <div class="wtg9ga_regionArea" id="workspaces">workspace / sessions</div>
+      <div class="wtg9ga_regionArea" id="workspaces">
+        <div class="wb_sectionHeader">
+          <span class="wb_sectionLabel">工作区</span>
+          <span class="wb_searchSlot"><button type="button" class="wb_iconButton" aria-label="搜索工作区">${ICON_GLASS}</button></span>
+          <span class="wb_headerActions">
+            <button type="button" class="wb_iconButton" aria-label="视图选项">${ICON_SLIDERS}</button>
+            <button type="button" class="wb_iconButton" aria-label="添加工作区">${ICON_ADD}</button>
+          </span>
+        </div>
+        workspace / sessions
+      </div>
     </div>
   </div>
 </div>
@@ -297,6 +348,67 @@ try {
           order: strip ? [...strip.querySelectorAll('button[role="tab"]')].map((b) => b.textContent) : [],
         };
       })(),
+      /* the two rails the group row has to land on. Measured straight off the
+         host section header in the fixture, so a change to either side moves
+         the numbers instead of silencing the check.
+
+         "glyph" here means INK, not box: getBoundingClientRect() on an svg only
+         reports the 16px/14px element, and the entire bug this check exists for
+         was that the boxes matched while the ink did not. So every glyph number
+         below is the union of the path/circle bounding boxes mapped through
+         getScreenCTM(), grown by half a stroke width. */
+      rail: (() => {
+        const groupEl = document.querySelector('.snc-group');
+        const caption = groupEl?.querySelector('.snc-caption');
+        const bud = groupEl?.querySelector('.snc-bud');
+        const chev = groupEl?.querySelector('.snc-chev');
+        const label = document.querySelector('.wb_sectionLabel');
+        const actions = [...document.querySelectorAll('.wb_headerActions > .wb_iconButton')];
+        const box = (el) => el?.getBoundingClientRect() || null;
+        const ink = (el) => {
+          const svg = el?.querySelector('svg');
+          if (!svg) return null;
+          const ctm = svg.getScreenCTM();
+          if (!ctm) return null;
+          let out = null;
+          for (const node of svg.querySelectorAll('path, circle, rect, line, polyline')) {
+            const b = node.getBBox();
+            const pad = (parseFloat(getComputedStyle(node).strokeWidth) || 0) / 2;
+            const pts = [[b.x - pad, b.y - pad], [b.x + b.width + pad, b.y + b.height + pad]];
+            for (const [x, y] of pts) {
+              const p = new DOMPoint(x, y).matrixTransform(ctm);
+              out = out
+                ? { left: Math.min(out.left, p.x), right: Math.max(out.right, p.x),
+                    top: Math.min(out.top, p.y), bottom: Math.max(out.bottom, p.y) }
+                : { left: p.x, right: p.x, top: p.y, bottom: p.y };
+            }
+          }
+          return out;
+        };
+        const view = ink(actions[0]);
+        const add = ink(actions[1]);
+        return {
+          hasGroup: !!groupEl,
+          // left: the caption box against the host label's box
+          captionLeft: box(caption) ? Math.round(box(caption).left) : null,
+          labelLeft: box(label) ? Math.round(box(label).left) : null,
+          // right: our two glyphs' INK against the header's two icons' ink
+          chevRight: ink(chev) ? Math.round(ink(chev).right * 100) / 100 : null,
+          addRight: add ? Math.round(add.right * 100) / 100 : null,
+          budRight: ink(bud) ? Math.round(ink(bud).right * 100) / 100 : null,
+          viewRight: view ? Math.round(view.right * 100) / 100 : null,
+          // the group box must still be a row wide: no bleed on the hover fill
+          groupRight: box(groupEl) ? Math.round(box(groupEl).right) : null,
+          // ...but the chevron's press box does overhang the column, exactly as
+          // the host's last icon button does: that is what puts the ink on rail
+          chevBoxRight: box(chev) ? Math.round(box(chev).right) : null,
+          addBoxRight: box(actions[1]) ? Math.round(box(actions[1]).right) : null,
+          columnRight: (() => {
+            const col = document.querySelector('[class*="regionArea"]');
+            return col ? Math.round(col.getBoundingClientRect().right) : null;
+          })(),
+        };
+      })(),
     };
   })()`);
 
@@ -310,6 +422,42 @@ try {
     assert.equal(s.anchorParent, 'NAV', 'the anchor is still a child of the list');
     assert.equal(s.editing, 'false');
   });
+
+  /* ---- 1b. the group row sits on the host section header's rails ----------
+     The host does not align a section heading the way it aligns its rows, and it
+     lets the header's trailing icons hang outside the content column. Both facts
+     are invisible to a jsdom test, so they are measured here: the caption box must
+     start where the "工作区" label box starts, and the chevron's INK must end where
+     "添加工作区"'s ink ends. All of it is read off the fixture, so the numbers move
+     with the CSS instead of being pinned twice.
+
+     The ink wording is the whole lesson of this check. An earlier version compared
+     svg boxes and passed while the arrow was visibly 4.45px short: the host's 16px
+     glyphs keep slack inside their viewBox (project-add-outline stops at 15.05),
+     ours fills its 14px box (9.6), so equal boxes put unequal ink on screen.
+     A sub-pixel tolerance is allowed because the fixture rounds nothing and the
+     two strokes are 0.5px and 0.7px thick. */
+  check('the group row lands on the section header rails, left and right', () => {
+    const r = s.rail;
+    assert.equal(r.hasGroup, true, 'the group row exists');
+    assert.equal(r.captionLeft, r.labelLeft, `caption ${r.captionLeft} vs label ${r.labelLeft}`);
+    // Ink, not boxes: the host draws its 16px icons inside a 28px button and we draw a
+    // 14px chevron inside a 20px one, so different box widths still land the same pixels.
+    // The measured window (1 css px == 1 screenshot px) puts both glyphs right edge on
+    // the same column; the antialiasing halo in a screenshot is worth about a pixel, and
+    // the chevron must never overshoot the host glyph, so the window is asymmetric.
+    assert.ok(r.chevRight <= r.addRight + 0.5 && r.chevRight >= r.addRight - 3,
+      `chevron ink ${r.chevRight} vs add ink ${r.addRight}`);
+    assert.ok(Math.abs(r.budRight - r.viewRight) <= 1.2,
+      `gear ink ${r.budRight} vs view ink ${r.viewRight}`);
+    // the hover fill must stay a row wide: only the press target bleeds, not the box
+    assert.equal(r.groupRight, r.columnRight, `group ${r.groupRight} vs column ${r.columnRight}`);
+    // The two glyph families cannot share a box width and need not: the host draws a
+    // 16px icon in a 28px button, we draw a 14px chevron in a 20px one. What must hold is
+    // the ink rail above, plus this: the press target stays inside the content column.
+    assert.ok(r.chevBoxRight <= r.columnRight,
+      `chevron box ${r.chevBoxRight} must not overhang column ${r.columnRight}`);
+  }, () => s.rail);
 
   /* ---- 2. edit mode wraps the anchor, not just the button ---- */
   await evaluate(`document.querySelector('.snc-bud').click()`);
