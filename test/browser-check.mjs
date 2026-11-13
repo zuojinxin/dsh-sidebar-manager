@@ -97,7 +97,8 @@ const page = (record) => `<!doctype html>
   .wtg9ga_panelList { grid-column: 2; grid-row: 2;
     flex: none; display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
   .wtg9ga_panelEntry { position: relative; display: flex;
-    border-inline: var(--dsh-sidebar-paint-inset) solid transparent; }
+    border-inline: var(--dsh-sidebar-paint-inset) solid transparent;
+    background-clip: padding-box; border-radius: 12px; }
   .wtg9ga_panelRow { box-sizing: border-box; display: flex; align-items: center;
     gap: var(--dsh-sidebar-label-gap);
     min-height: 32px; margin: 0;
@@ -105,6 +106,14 @@ const page = (record) => `<!doctype html>
     border: none; border-inline: var(--dsh-sidebar-paint-inset) solid transparent;
     background: 0 0; background-clip: padding-box;
     border-radius: 12px; font: inherit; line-height: 22px; text-align: left; cursor: pointer; }
+  /* THE HOST'S WIDE-ENTRY RULE. Inside a .panelEntry the wrapper owns the inset
+     and the paint box, so the host strips both off the button underneath it:
+     "border-inline: 0", "background: 0 0", "width: 100%", "padding-right: 38px".
+     The fixture has to carry this or the plugin is tested against a host that
+     does not exist -- which is exactly how a 3px double-inset bug survived a
+     green run. Our anchor is a different wrapper, so nothing here reaches it. */
+  .wtg9ga_panelEntryWide .wtg9ga_panelRow {
+    background: 0 0; border-inline: 0; width: 100%; margin: 0; padding-right: 38px; }
   .wtg9ga_panelRow:hover { background: rgba(0, 0, 0, .06); }
   .wtg9ga_moreAnchor { display: flex; flex-direction: column; }
   .wtg9ga_panelGlyph { flex: none; display: inline-flex; align-items: center; justify-content: center; }
@@ -130,14 +139,48 @@ const page = (record) => `<!doctype html>
     align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0;
     border: 0; border-radius: 6px; background: 0 0; cursor: pointer; }
   .wb_iconButton > svg { display: block; width: 16px; height: 16px; }
+  /* ---- the host's RAIL ------------------------------------------------------
+     Copied from SidebarRoot.module.css .root.collapsed / .collapsed .panelList /
+     .collapsed .panelRow: the sidebar pads 18/10/6, so the content column is
+     56 - 20 = 36px, the lists open their gap to 12px, and every panel row
+     becomes a centred 36x36 icon box with no painted border. The plugin has to
+     fit ONE control into that 36px, so the fixture has to be that narrow or the
+     overflow it is meant to catch would never happen.
+
+     The collapse is a class on the sidebar root, exactly as the host does it
+     (its root class, then the same class plus "collapsed", swapped when the
+     slide settles). The plugin matches the "collapsed" fragment, never the
+     build's hash prefix. */
+  #side.wtg9ga_collapsed { box-sizing: border-box; width: 56px; padding: 18px 10px 6px; }
+  #side.wtg9ga_collapsed .wtg9ga_scrollArea {
+    display: flex; flex-direction: column; margin: 0; padding: 0; }
+  #side.wtg9ga_collapsed .wtg9ga_panelList { gap: 12px; margin-bottom: 12px; }
+  #side.wtg9ga_collapsed .wtg9ga_panelEntry { border-inline: 0; }
+  #side.wtg9ga_collapsed .wtg9ga_panelRow {
+    width: 36px; height: 36px; justify-content: center; margin: 0;
+    padding: 0; border-inline: 0; }
+  #side.wtg9ga_collapsed .wtg9ga_panelTitle { display: none; }
   /* copied from the conversation header: the view row and its "..." launcher */
   #chat { width: 620px; padding: 8px; }
   .an3WzG_tabs { position: relative; display: flex; flex-wrap: wrap; align-items: flex-start;
     gap: 16px 20px; width: 100%; min-width: 0; margin-top: 10px; padding-left: 8px; box-sizing: border-box; }
   .an3WzG_viewTabs { display: flex; flex-wrap: wrap; gap: 32px; min-width: 0; min-height: 25px; }
-  .an3WzG_tab { position: relative; min-height: 25px; padding: 0 0 9px; border: none;
+  /* copied from ConversationView.module.css: the tab's 10/9 padding and 35px
+     min-height, and the label inside its own span. The plugin's box has to line
+     up with THIS, so the fixture has to carry the real metrics -- a symmetric
+     tab would make a wrong alignment look right. */
+  .an3WzG_tab { position: relative; box-sizing: border-box; min-height: 35px;
+    margin: -10px -10px 0; padding: 10px 10px 9px; border: none;
     background: 0 0; font: inherit; font-size: 13px; font-weight: 500; line-height: 16px; cursor: pointer; }
+  .an3WzG_tabLabel { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 88px; }
   .an3WzG_viewsMoreAnchor { flex: none; }
+  /* the host's tooltip bubble, verbatim shape (Tooltip.module.css): fixed, so it
+     costs no layout. The plugin must never turn that into a flow box. */
+  .tb_bubble { display: inline-flex; align-items: safe center; gap: 8px;
+    position: fixed; z-index: 100; width: max-content; box-sizing: border-box;
+    max-width: min(50vw, calc(100vw - 24px)); padding: 3px 7px;
+    border-radius: var(--dsw-radius-sm); background: #222; color: #fff;
+    font-size: 13px; line-height: 20px; white-space: pre-line; pointer-events: none; }
   .an3WzG_viewsMore { width: 22px; height: 22px; margin-top: -3px; padding: 0;
     border: none; background: 0 0; cursor: pointer; }
 </style></head>
@@ -148,6 +191,11 @@ const page = (record) => `<!doctype html>
       <nav class="wtg9ga_panelList" aria-label="全局面板">
         ${PANELS.map(entry).join('')}
         ${moreRow()}
+        <!-- 0.2.1-rc.5 renders the hover tooltip as a CHILD OF THE LIST, and it is
+             position:fixed precisely so it costs no layout. Anything of ours that
+             styles "every direct child" would drag it into the flow and shift the
+             whole list -- see the check near the end of this file. -->
+        <span class="tb_bubble" role="tooltip">插件</span>
       </nav>
       <div class="wtg9ga_regionArea" id="workspaces">
         <div class="wb_sectionHeader">
@@ -166,7 +214,7 @@ const page = (record) => `<!doctype html>
 <div id="chat">
   <div class="an3WzG_tabs">
     <div class="an3WzG_viewTabs" role="tablist" data-conversation-tabs="">
-      ${VIEWS.map((v, i) => `<button type="button" role="tab" aria-selected="${i === 0}" class="an3WzG_tab${i === 0 ? ' an3WzG_tabActive' : ''}">${v}</button>`).join('')}
+      ${VIEWS.map((v, i) => `<button type="button" role="tab" aria-selected="${i === 0}" class="an3WzG_tab${i === 0 ? ' an3WzG_tabActive' : ''}"><span class="an3WzG_tabLabel">${v}</span></button>`).join('')}
     </div>
     <span class="an3WzG_viewsMoreAnchor"><button type="button" class="an3WzG_viewsMore" aria-label="更多会话视图" aria-haspopup="menu" aria-expanded="false"></button></span>
   </div>
@@ -282,18 +330,49 @@ try {
     /* 0.2.2-rc.2 wraps every pinned row in div.panelEntry (the unpin button and
        the row's own paint box live there), so "the unit" is the nav's direct
        child, never the button: that is where our controls go. */
-    const unitOf = (name) => [...nav.children]
+    /* our group row now lives INSIDE the list, so every "the host's children"
+       walk has to step over it. One helper, used everywhere below, so the
+       exclusion cannot drift between checks.
+       A host may also keep non-row things in the list -- 0.2.1-rc.5 renders the
+       hover tooltip there -- so a child only counts when it IS a row or owns one. */
+    const isRowUnit = (el) => el.matches('button[class*="panelRow"]')
+      || !!el.querySelector(':scope > button[class*="panelRow"]');
+    const hostChildren = (list) => [...list.children]
+      .filter((el) => !el.classList.contains('snc-group') && isRowUnit(el));
+    const unitOf = (name) => [...hostChildren(nav)]
       .find((el) => el.getAttribute('aria-label') === name ||
         el.querySelector(':scope > button[class*="panelRow"][aria-label="' + name + '"]'));
     const bareUnit = unitOf('任务看板');
     const bare = bareUnit?.querySelector('button[class*="panelRow"]');
     return {
-      order: [...nav.children].map(label),
+      order: hostChildren(nav).map(label),
+      groupFirst: nav.firstElementChild?.classList?.contains('snc-group') || false,
       anchorParent: anchor.parentElement.tagName,
       anchorInsideNav: anchor.closest('nav') !== null,
-      editing: document.querySelector('.snc-shell')?.dataset.sncEditing,
+      editing: nav.dataset.sncEditing,
       boxes: document.querySelectorAll('[data-snc-check]').length,
-      anchorCtl: !!anchor.querySelector(':scope > .snc-ctl'),
+      /* our controls live INSIDE the row button, exactly as they do on every
+         other entry -- putting them on the anchor would make the anchor a flex
+         row of [controls][button] and shift the button's own inset */
+      anchorCtl: !!anchor.querySelector(':scope > button[class*="panelRow"] > .snc-ctl'),
+      /* …and where that box starts is COPIED from a real host row rather than
+         hard-coded for a known host shape (see syncRowMetrics). This asserts the
+         copy itself, so a fixture built like one host cannot silently bless code
+         that only works on that host. */
+      rowMetrics: (() => {
+        const navStyle = getComputedStyle(nav);
+        const unit = hostChildren(nav).find((el) => el.querySelector('button[class*="panelRow"]'))
+          || null;
+        const unitStyle = unit ? getComputedStyle(unit) : null;
+        const read = (name) => navStyle.getPropertyValue(name).trim() || null;
+        return {
+          anchorMargin: read('--snc-more-margin'),
+          anchorBorder: read('--snc-more-border'),
+          btnBorder: read('--snc-btn-border'),
+          hostMargin: unitStyle ? unitStyle.marginInlineStart : null,
+          hostBorder: unitStyle ? unitStyle.borderInlineStartWidth : null,
+        };
+      })(),
       /* the anchor has no margin or padding of its own, so the controls inside
          it must be told where the rows above and below start */
       align: (() => {
@@ -307,23 +386,74 @@ try {
           // still compare: it says whether the control is centred in its row
           return { left: Math.round(r.left), dy: Math.round((r.top + r.height / 2) - (u.top + u.height / 2)) };
         };
+        /* Controls live INSIDE each row's button on every entry -- bare rows, the
+           host's entry wrappers, and our anchor around the "more" button alike.
+           Probing ":scope > .snc-ctl" only worked while the wrapper carried them. */
+        const ctlIn = (unit, rest) => unit?.querySelector(':scope > .snc-ctl' + rest)
+          || unit?.querySelector(':scope > button[class*="panelRow"] > .snc-ctl' + rest)
+          || null;
         return {
-          bareBox: at(rowUnit, ':scope > .snc-ctl > [data-snc-check]'),
-          moreBox: at(anchor, ':scope > .snc-ctl > [data-snc-check]'),
-          bareGrip: at(rowUnit, ':scope > .snc-ctl > [data-snc-drag]'),
-          moreGrip: at(anchor, ':scope > .snc-ctl > [data-snc-drag]'),
+          bareBox: at(rowUnit, ':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-check]'),
+          moreBox: at(anchor, ':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-check]'),
+          bareGrip: at(rowUnit, ':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-drag]'),
+          moreGrip: at(anchor, ':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-drag]'),
           bareTitle: at(rowUnit, '[class*="panelTitle"]'),
           moreTitle: at(anchor, '[class*="panelTitle"]'),
+          /* the two hosts that answer this differ: a .panelEntry carries the
+             shared paint inset as a border, a bare .moreAnchor gets it from us.
+             Either way the controls must END UP on the same x -- the inset is
+             bookkeeping, not a visible offset. */
+          bareCtlLeft: (() => {
+            const c = rowUnit?.querySelector(':scope > button[class*="panelRow"] > .snc-ctl')
+              || rowUnit?.querySelector(':scope > .snc-ctl');
+            return c ? Math.round(c.getBoundingClientRect().left) : null;
+          })(),
+          moreCtlLeft: (() => {
+            const c = anchor?.querySelector(':scope > button[class*="panelRow"] > .snc-ctl');
+            return c ? Math.round(c.getBoundingClientRect().left) : null;
+          })(),
+          /* The GLYPH and the LABEL are what a user reads as "the row's content".
+             They must start on the same x as every other row's, or the last row
+             looks indented even when its checkbox lines up. */
+          bareGlyphLeft: (() => {
+            const g = rowUnit?.querySelector('[class*="panelGlyph"]');
+            return g ? Math.round(g.getBoundingClientRect().left) : null;
+          })(),
+          moreGlyphLeft: (() => {
+            const g = anchor?.querySelector('[class*="panelGlyph"]');
+            return g ? Math.round(g.getBoundingClientRect().left) : null;
+          })(),
+          /* …and the highlit pill must be the same shape, or the row stops
+             reading as one control: a panelEntry paints its fill up to the
+             padding box (inside the transparent inset), so an anchor without the
+             same clip starts its fill at the checkbox instead of behind it. */
+          barePillLeft: (() => {
+            const cs = rowUnit ? getComputedStyle(rowUnit) : null;
+            const r = rowUnit?.getBoundingClientRect();
+            return r ? Math.round(r.left + parseFloat(cs.borderInlineStartWidth || '0')) : null;
+          })(),
+          morePillLeft: (() => {
+            const cs = anchor ? getComputedStyle(anchor) : null;
+            const r = anchor?.getBoundingClientRect();
+            return r ? Math.round(r.left + parseFloat(cs.borderInlineStartWidth || '0')) : null;
+          })(),
+          bareClip: rowUnit ? getComputedStyle(rowUnit).backgroundClip : null,
+          moreClip: anchor ? getComputedStyle(anchor).backgroundClip : null,
+          bareBtnBorder: rowUnit?.querySelector(':scope > button[class*="panelRow"]')
+            ? getComputedStyle(rowUnit.querySelector(':scope > button[class*="panelRow"]')).borderInlineStartWidth : null,
+          moreBtnBorder: anchor?.querySelector(':scope > button[class*="panelRow"]')
+            ? getComputedStyle(anchor.querySelector(':scope > button[class*="panelRow"]')).borderInlineStartWidth : null,
         };
       })(),
-      moreBox: !!anchor.querySelector(':scope > .snc-ctl > [data-snc-check]'),
-      moreHandle: !!anchor.querySelector(':scope > .snc-ctl > [data-snc-drag]'),
+      moreBox: !!anchor.querySelector(':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-check]'),
+      moreHandle: !!anchor.querySelector(':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-drag]'),
       anchorDisplay: getComputedStyle(anchor).display,
       anchorOpacity: getComputedStyle(anchor).opacity,
       hiddenFlag: anchor.dataset.sncHidden || null,
       bareFlag: bareUnit?.dataset.sncHidden || null,
       bareInNav: !!bareUnit && bareUnit.parentElement === nav,
-      bareCtl: !!bareUnit?.querySelector(':scope > .snc-ctl'),
+      bareCtl: !!(bareUnit?.querySelector(':scope > button[class*="panelRow"] > .snc-ctl')
+        || bareUnit?.querySelector(':scope > .snc-ctl')),
       bareDisplay: bareUnit ? getComputedStyle(bareUnit).display : null,
       bareEntry: !!bareUnit && bareUnit !== bare,
       stored: JSON.parse(localStorage.getItem(${JSON.stringify(STORE)}) || 'null'),
@@ -334,6 +464,27 @@ try {
         const button = more?.querySelector('button');
         const rect = button?.getBoundingClientRect();
         const boxRect = box?.getBoundingClientRect();
+        /* Compare the CHECKBOXES, not the ctl columns: inside a tab the box sits
+           below the 20px grip, while the launcher has a box and no grip, so equal
+           ctl tops would actually put the two boxes 2px apart. The box is the
+           thing a user sees on the line. The pinned view (对话) carries no box,
+           so the first tab WITH one is the reference. */
+        const tabBox = [...(strip?.querySelectorAll('button[role="tab"]') || [])]
+          .map((tab) => tab.querySelector('.snc-ctl > input'))
+          .find(Boolean) || null;
+        const launcherBox = more?.querySelector(':scope > .snc-ctl > input');
+        const topOf = (el) => (el ? Math.round(el.getBoundingClientRect().top) : null);
+        /* The glyph is the third line that has to agree: a row can have every box
+           on one line and still look wrong because the "…" ink sits above the
+           neighbours' text. Compare centre-lines, since the two boxes differ in
+           height (22px button vs 16px label band). */
+        const centreOf = (el) => {
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return Math.round((r.top + r.bottom) / 2);
+        };
+        const firstLabel = strip?.querySelector('[class*="tabLabel"]');
+        const launcherGlyph = more?.querySelector(':scope > button');
         return {
           parent: more?.parentElement?.className || null,
           isRowChild: !!more && more.parentElement === strip.parentElement,
@@ -345,6 +496,10 @@ try {
           buttonWidth: rect ? Math.round(rect.width) : null,
           ctl: !!more?.querySelector(':scope > .snc-ctl'),
           handle: !!more?.querySelector(':scope > .snc-ctl > [data-snc-drag]'),
+          boxTop: topOf(launcherBox),
+          tabBoxTop: topOf(tabBox),
+          glyphCentre: centreOf(launcherGlyph),
+          labelCentre: centreOf(firstLabel),
           order: strip ? [...strip.querySelectorAll('button[role="tab"]')].map((b) => b.textContent) : [],
         };
       })(),
@@ -406,6 +561,55 @@ try {
           columnRight: (() => {
             const col = document.querySelector('[class*="regionArea"]');
             return col ? Math.round(col.getBoundingClientRect().right) : null;
+          })(),
+        };
+      })(),
+      /* ---- the rail ----------------------------------------------------------
+         Everything the "one control in a 36px column" fix has to be judged on.
+         Boxes, not opacity: the bug was that BOTH pockets stayed in the flow and
+         overran each other, so what matters is which ones are laid out at all
+         (display/visibility) and where their right edges land. */
+      railState: (() => {
+        const shell = document.querySelector('nav[class*="panelList"]');
+        const groupEl = document.querySelector('.snc-group');
+        const caption = document.querySelector('.snc-caption');
+        const bud = document.querySelector('.snc-bud');
+        const chev = document.querySelector('.snc-chev');
+        const side = document.querySelector('#side');
+        const box = (el) => {
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          const cs = getComputedStyle(el);
+          return {
+            left: Math.round(r.left), right: Math.round(r.right),
+            width: Math.round(r.width), height: Math.round(r.height),
+            display: cs.display, opacity: Number(cs.opacity),
+          };
+        };
+        /* "laid out" = occupies its own box: the row is a flex container, so a
+           pocket that is display:none contributes nothing and one that is merely
+           invisible still does. The check needs the first kind. */
+        const laid = (b) => !!b && b.display !== 'none' && b.width > 0 && b.height > 0;
+        return {
+          sideWidth: side ? Math.round(side.getBoundingClientRect().width) : null,
+          flag: shell?.dataset.sncRail || null,
+          editing: shell?.dataset.sncEditing || null,
+          group: box(groupEl),
+          caption: box(caption),
+          bud: box(bud),
+          chev: box(chev),
+          /* the two buttons the fix has to end up with exactly one of */
+          laidBuds: [bud].filter((el) => laid(box(el))).length,
+          laidChevs: [chev].filter((el) => laid(box(el))).length,
+          /* the group box must not outgrow the column it sits in, or the row
+             spills onto whatever is beside it -- this is what "挤在一起" was */
+          groupOverflows: (() => {
+            const g = groupEl?.getBoundingClientRect();
+            const s = side?.getBoundingClientRect();
+            if (!g || !s) return null;
+            const cs = getComputedStyle(side);
+            const inner = s.right - parseFloat(cs.paddingRight);
+            return Math.round(g.right - inner);
           })(),
         };
       })(),
@@ -471,6 +675,12 @@ try {
     assert.equal(s.anchorParent, 'NAV', 'the anchor is decorated in place, never wrapped');
     assert.equal(s.anchorCtl, true, 'the controls live inside it');
     assert.equal(s.anchorDisplay, 'flex', 'and it is still laid out');
+    /* the box the anchor starts from is read off a real host row, so this row
+       follows whatever the host does instead of assuming one host's shape */
+    assert.equal(s.rowMetrics.anchorMargin, s.rowMetrics.hostMargin,
+      `the anchor must mirror a row unit's margin (${s.rowMetrics.anchorMargin} vs ${s.rowMetrics.hostMargin})`);
+    assert.equal(s.rowMetrics.anchorBorder, s.rowMetrics.hostBorder,
+      `the anchor must mirror a row unit's border (${s.rowMetrics.anchorBorder} vs ${s.rowMetrics.hostBorder})`);
   });
 
   check('the more row lines up with the rows above and below it', () => {
@@ -482,10 +692,23 @@ try {
     assert.ok(near(a.moreTitle.left, a.bareTitle.left), `title ${a.moreTitle.left} vs ${a.bareTitle.left}`);
     assert.ok(near(a.moreGrip.dy, a.bareGrip.dy), `grip dy ${a.moreGrip.dy} vs ${a.bareGrip.dy}`);
     assert.ok(near(a.moreBox.dy, a.bareBox.dy), `box dy ${a.moreBox.dy} vs ${a.bareBox.dy}`);
+    /* the controls themselves, by absolute x: this is what a user sees as "the
+       last row is indented a little further right than the others" */
+    assert.ok(near(a.moreCtlLeft, a.bareCtlLeft),
+      `controls must share a left edge (more ${a.moreCtlLeft} vs row ${a.bareCtlLeft})`);
+    /* the glyph and the label, i.e. the row's actual content */
+    assert.ok(near(a.moreGlyphLeft, a.bareGlyphLeft),
+      `the glyph must share a left edge (more ${a.moreGlyphLeft} vs row ${a.bareGlyphLeft})`);
+    /* and the row must still read as ONE control: same painted pill, same clip */
+    assert.ok(near(a.morePillLeft, a.barePillLeft),
+      `the highlit pill must start in the same place (more ${a.morePillLeft} vs row ${a.barePillLeft})`);
+    assert.equal(a.moreClip, a.bareClip, `the fill must be clipped the same way (${a.moreClip} vs ${a.bareClip})`);
+    assert.equal(a.moreBtnBorder, a.bareBtnBorder,
+      `the button must carry no inset of its own (${a.moreBtnBorder} vs ${a.bareBtnBorder})`);
   }, () => s.align);
   /* ---- 3. unchecking hides the anchor, and the anchor stays whole ---- */
   await evaluate(`(() => {
-    const box = document.querySelector('[class*="moreAnchor"]').querySelector(':scope > .snc-ctl > [data-snc-check]');
+    const box = document.querySelector('[class*="moreAnchor"]').querySelector(':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-check]');
     box.checked = false;
     box.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
@@ -514,7 +737,7 @@ try {
   await evaluate(`document.querySelector('.snc-bud').click()`);
   await new Promise((r) => setTimeout(r, 80));
   await evaluate(`(() => {
-    const box = document.querySelector('[class*="moreAnchor"]').querySelector(':scope > .snc-ctl > [data-snc-check]');
+    const box = document.querySelector('[class*="moreAnchor"]').querySelector(':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-check]');
     box.checked = true;
     box.dispatchEvent(new Event('change', { bubbles: true }));
     document.querySelector('.snc-bud').click();
@@ -534,7 +757,8 @@ try {
     const nav = document.querySelector('nav[class*="panelList"]');
     // rc.2 puts the row inside div.panelEntry, so the unit is that div
     const unit = [...nav.children].find((el) => el.querySelector('button[class*="panelRow"][aria-label="任务看板"]'));
-    const box = unit.querySelector(':scope > .snc-ctl > [data-snc-check]');
+    const box = unit.querySelector(':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-check]')
+      || unit.querySelector(':scope > .snc-ctl > [data-snc-check]');
     box.checked = false;
     box.dispatchEvent(new Event('change', { bubbles: true }));
   })()`);
@@ -568,8 +792,15 @@ try {
   await new Promise((r) => setTimeout(r, 80));
   await evaluate(`(() => {
     const anchor = document.querySelector('[class*="moreAnchor"]');
-    const handle = anchor.querySelector(':scope > .snc-ctl > [data-snc-drag]');
-    const target = anchor.parentElement.firstElementChild;
+    const handle = anchor.querySelector(':scope > button[class*="panelRow"] > .snc-ctl > [data-snc-drag]');
+    /* the first HOST entry, not the list's first child: our group row sits at the
+       head of the list and is deliberately not a drop target, and the host may
+       keep non-row things in the list too (0.2.1-rc.5 renders the hover tooltip
+       there). A drop target has to be something that owns a row. */
+    const target = [...anchor.parentElement.children].find((el) =>
+      !el.classList.contains('snc-group')
+      && (el.matches('button[class*="panelRow"]')
+        || !!el.querySelector(':scope > button[class*="panelRow"]')));
     const from = handle.getBoundingClientRect();
     const to = target.getBoundingClientRect();
     const x = to.left + to.width / 2;
@@ -601,6 +832,12 @@ try {
     assert.equal(s.viewRow.ctl, true, 'the box lives inside the anchor');
     assert.equal(s.viewRow.buttonWidth, 22, 'the host width survives the wrapper');
     assert.equal(s.viewRow.boxLeftOfButton, true, 'the box sits in front of it');
+    assert.equal(s.viewRow.boxTop, s.viewRow.tabBoxTop,
+      `the launcher box must sit on the tabs' box line (its ${s.viewRow.boxTop} vs tab ${s.viewRow.tabBoxTop})`);
+    /* …and the glyph itself, or the row still reads as "the ... is floating up"
+       even though every box lines up */
+    assert.ok(Math.abs(s.viewRow.glyphCentre - s.viewRow.labelCentre) <= 1,
+      `the "…" ink must share the label's centre line (glyph ${s.viewRow.glyphCentre} vs label ${s.viewRow.labelCentre})`);
   }, () => s.viewRow);
 
   await evaluate(`(() => {
@@ -626,7 +863,322 @@ try {
     assert.deepEqual(s.viewRow.order, VIEWS);
   }, () => s.viewRow);
 
-  /* ---- 9. a host re-render while editing must not throw -------------------
+  /* ---- 9. the host's rail: exactly one control in a 36px column -------------
+     The reported bug (issue #3's sibling): collapse the sidebar to the rail and
+     this row kept its wide shape -- caption plus TWO 28px pockets is 56px of
+     fixed ink, and the caption can shrink to zero, so both icons spilled over
+     each other in the middle of a 36px column.
+
+     Two things are checked and both matter:
+     1. structurally, exactly one of the two pockets is laid out (the other must
+        be display:none, not merely transparent -- an invisible 28px box still
+        eats the column and still overlaps its neighbour);
+     2. geometrically, the row's box stays inside the column the host gives it.
+     The flag itself is checked separately, because a stylesheet that happens to
+     look right while the flag is stale would break the next `.snc-*` rule that
+     keys off it. */
+  /* the drag section above already left a clean, wide boot with its order saved,
+     so the rail section starts from THAT state instead of re-booting: a fresh
+     boot() would wipe the record the final "order survived unload" check needs. */
+  const railWide = await evaluate(`(() => {
+    const shell = document.querySelector('nav[class*="panelList"]');
+    return { flag: shell.dataset.sncRail || null, side: Math.round(document.querySelector('#side').getBoundingClientRect().width) };
+  })()`);
+  check('a wide sidebar carries no rail flag', () => {
+    assert.equal(railWide.flag, null, 'the rail flag must only exist on a rail');
+    assert.ok(railWide.side > 200, `fixture starts wide (${railWide.side}px)`);
+  }, () => railWide);
+
+  /* Collapse the way the host does it: swap the sidebar root's class. This is
+     the path that has to work, because the class flip carries no childList
+     mutation -- a plugin that only repainted on child changes would sit on a
+     stale flag until something else re-rendered. */
+  await evaluate(`document.querySelector('#side').classList.add('wtg9ga_collapsed')`);
+  await new Promise((r) => setTimeout(r, 120));
+  s = await snapshot();
+  check('collapsing the host sidebar puts the row into rail shape', () => {
+    assert.equal(s.railState.sideWidth, 56, 'the fixture is the host rail width');
+    assert.equal(s.railState.flag, 'true', 'the class flip alone republished the flag');
+  }, () => s.railState);
+
+  check('the rail row lays out exactly one control, and it is the fold arrow', () => {
+    assert.equal(s.railState.laidChevs, 1, 'the chevron is the one that stays');
+    assert.equal(s.railState.laidBuds, 0, 'the gear must leave the flow, not just fade');
+    assert.equal(s.railState.caption.display, 'none', 'no width for a caption in a rail');
+  }, () => s.railState);
+
+  check('the rail control is the host 36x36 rail box, not a 28px wide-state pocket', () => {
+    assert.equal(s.railState.chev.width, 36, `chevron box ${s.railState.chev.width}`);
+    assert.equal(s.railState.chev.height, 36, `chevron box ${s.railState.chev.height}`);
+    assert.equal(s.railState.group.height, 36, `row height ${s.railState.group.height}`);
+  }, () => s.railState);
+
+  check('the rail row stays inside the column: no overlap of the two icons', () => {
+    assert.ok(s.railState.groupOverflows <= 0,
+      `row overhangs the column by ${s.railState.groupOverflows}px`);
+  }, () => s.railState);
+
+  /* In the rail the gear has nothing to act on (its checkboxes and drag handles
+     live on list rows that are now icons), so it is the arrow that survives.
+     The arrow has to still fold: that is the one operation the rail still
+     supports, and it is what opens the list back up. */
+  await evaluate(`document.querySelector('.snc-group').click()`);
+  await new Promise((r) => setTimeout(r, 80));
+  const railFolded = await evaluate(`(() => {
+    const list = document.querySelector('nav[class*="panelList"]');
+    const row = document.querySelector('.snc-group');
+    /* folding hides the HOST's entries, not the list: the row lives inside the
+       list now, so hiding the list would take the row with it. What must be
+       gone is every child that is not our row -- and the row must stay laid out. */
+    const others = [...list.children].filter((el) => el !== row);
+    return {
+      folded: list.dataset.sncFolded,
+      listDisplay: getComputedStyle(list).display,
+      hiddenEntries: others.filter((el) => getComputedStyle(el).display === 'none').length,
+      totalEntries: others.length,
+      rowVisible: row.getBoundingClientRect().height > 0,
+    };
+  })()`);
+  check('the surviving rail arrow still folds the list', () => {
+    assert.equal(railFolded.folded, 'true');
+    assert.notEqual(railFolded.listDisplay, 'none', 'the list itself stays: the row lives in it');
+    assert.equal(railFolded.hiddenEntries, railFolded.totalEntries,
+      'every host entry is hidden while folded');
+    assert.equal(railFolded.rowVisible, true, 'and the row is still there to unfold it again');
+  }, () => railFolded);
+  await evaluate(`document.querySelector('.snc-group').click()`);
+  await new Promise((r) => setTimeout(r, 80));
+
+  /* Editing is the one state where the gear must NOT be the one dropped: it is
+     the only way out of the mode, and the arrow cannot fold while editing
+     anyway. Enter edit while wide (where the gear is reachable), then collapse. */
+  await evaluate(`document.querySelector('.snc-bud').click()`);
+  await new Promise((r) => setTimeout(r, 80));
+  s = await snapshot();
+  check('enter edit mode while wide, then collapse: the gear is the survivor', () => {
+    assert.equal(s.railState.editing, 'true', 'edit mode is on');
+    assert.equal(s.railState.laidBuds, 1, 'the gear must stay: it is the only exit');
+    assert.equal(s.railState.laidChevs, 0, 'the arrow cannot fold while editing anyway');
+  }, () => s.railState);
+  check('the rail row is still a single 36px box while editing', () => {
+    assert.ok(s.railState.groupOverflows <= 0,
+      `row overhangs the column by ${s.railState.groupOverflows}px`);
+  }, () => s.railState);
+
+  /* The host's "more" row is not inside a .panelEntry: while editing it gets the
+     shared paint inset straight on the anchor, because that is where a row
+     wrapper's inset would be. In the RAIL the host zeroes the inset on every
+     .panelEntry, so an anchor that kept its 3px border would sit 3px right of
+     the entries above it -- visible as the grip and the box stepping inwards on
+     the last row only. Reported from a real window; asserted here so the border
+     cannot come back unconditionally. */
+  const railMore = await evaluate(`(() => {
+    const nav = document.querySelector('nav[class*="panelList"]');
+    const anchor = nav.querySelector('[class*="moreAnchor"]');
+    const bareEntry = [...nav.children].find((el) => el.querySelector(':scope > button[class*="panelRow"][aria-label="任务看板"]'));
+    const ctlX = (unit) => {
+      const c = unit.querySelector(':scope > button[class*="panelRow"] > .snc-ctl')
+        || unit.querySelector(':scope > .snc-ctl');
+      if (!c) return null;
+      const r = c.getBoundingClientRect();
+      return { left: Math.round(r.left), chevron: Math.round(r.width) };
+    };
+    return {
+      more: ctlX(anchor),
+      bare: ctlX(bareEntry),
+      anchorBorder: getComputedStyle(anchor).borderInlineStartWidth,
+      entryBorder: getComputedStyle(bareEntry).borderInlineStartWidth,
+    };
+  })()`);
+  check('in the rail the more row keeps the entries\' inset: its box does not step in', () => {
+    assert.ok(railMore.more && railMore.bare, 'both rows carry controls');
+    assert.equal(railMore.more.left, railMore.bare.left,
+      `controls must share a left edge (more ${railMore.more.left} vs row ${railMore.bare.left})`);
+    /* and it must be the host's own rail geometry that decides this, not a value
+       of ours: whatever the entries carry, the anchor carries the same */
+    assert.equal(railMore.anchorBorder, railMore.entryBorder,
+      'the anchor takes the same inset as a host entry in this state');
+  }, () => railMore);
+
+  /* ---- editing, then collapsing: one 36px box per row and nothing else ----
+     The sidebar is now 36px wide but the mode is still on, so a row has to hold
+     what still means something at that size: the box (the mode's whole point) and
+     the glyph (the only identity a 36px row can carry). Left to the wide layout it
+     held the grip AND the box AND the glyph -- 40px into 36 -- so the grip, the
+     box and a sliced-off icon spilled out beside the column, and on a wrapper host
+     the row stretched to the panel's full width. Reported from a real window with
+     a screenshot. */
+  const railEdit = await evaluate(`(() => {
+    const nav = document.querySelector('nav[class*="panelList"]');
+    const side = document.querySelector('#side').getBoundingClientRect();
+    const rows = [];
+    for (const btn of nav.querySelectorAll('button[class*="panelRow"]')) {
+      const unit = btn.parentElement;
+      const ctl = btn.querySelector(':scope > .snc-ctl') || unit.querySelector(':scope > .snc-ctl');
+      const grip = ctl?.querySelector('[data-snc-drag]');
+      const glyph = btn.querySelector('[class*="panelGlyph"]');
+      const r = btn.getBoundingClientRect();
+      const box = ctl?.querySelector('input');
+      const b = box?.getBoundingClientRect();
+      const visible = (el) => !!el && getComputedStyle(el).display !== 'none'
+        && el.getBoundingClientRect().width > 0;
+      /* the box and the glyph are ONE centred pair, so the measurement is the
+         span they occupy together, not either box on its own */
+      const gr = glyph ? glyph.getBoundingClientRect() : null;
+      const pairLeft = gr && b ? Math.min(b.left, gr.left) : (b ? b.left : null);
+      const pairRight = gr && b ? Math.max(b.right, gr.right) : (b ? b.right : null);
+      rows.push({
+        label: btn.getAttribute('aria-label'),
+        rowWidth: Math.round(r.width),
+        rowLeft: Math.round(r.left),
+        rowRight: Math.round(r.right),
+        gripShown: visible(grip),
+        glyphShown: visible(glyph),
+        boxWidth: b ? Math.round(b.width) : null,
+        pairLeft: pairLeft === null ? null : Math.round(pairLeft),
+        pairRight: pairRight === null ? null : Math.round(pairRight),
+      });
+    }
+    return {
+      sideRight: Math.round(side.right),
+      listWidth: Math.round(nav.getBoundingClientRect().width),
+      scrollWidth: nav.scrollWidth,
+      rows,
+    };
+  })()`);
+  check('editing then collapsing keeps one 36px box per row, with no overflow', () => {
+    for (const row of railEdit.rows) {
+      assert.equal(row.rowWidth, 36, `${row.label}: a rail row is one 36px square`);
+      assert.ok(row.rowRight <= railEdit.sideRight,
+        `${row.label}: the row must not spill past the column (${row.rowRight} > ${railEdit.sideRight})`);
+      assert.equal(row.gripShown, false, `${row.label}: a one-column rail has nowhere to drag, so no grip`);
+      /* the glyph STAYS: five identical squares would not say which row is which,
+         and the label has no room to. It is what makes the rail still readable. */
+      assert.equal(row.glyphShown, true, `${row.label}: the glyph stays, it is the row's identity`);
+      assert.equal(row.boxWidth, 16, `${row.label}: the box keeps its size`);
+      /* the pair is centred as one unit, and it has to FIT: 16 + 2 + 14 = 32 in 36 */
+      const pairCentre = (row.pairLeft + row.pairRight) / 2;
+      const rowCentre = row.rowLeft + row.rowWidth / 2;
+      assert.ok(Math.abs(pairCentre - rowCentre) <= 1,
+        `${row.label}: the box and glyph are centred together (${pairCentre} vs ${rowCentre})`);
+      assert.ok(row.pairRight - row.pairLeft <= row.rowWidth,
+        `${row.label}: the pair fits inside the square (${row.pairRight - row.pairLeft} > ${row.rowWidth})`);
+    }
+    /* nothing is hanging out of the list's own box either -- that is what made
+       the column scroll sideways in the reported window */
+    assert.ok(railEdit.scrollWidth <= railEdit.listWidth,
+      `the list must not be wider than its own box (${railEdit.scrollWidth} vs ${railEdit.listWidth})`);
+  }, () => railEdit);
+
+  /* ---- a host overlay inside the list keeps its own box -------------------
+     0.2.1-rc.5 renders the hover tooltip as a CHILD OF THE LIST and makes it
+     position:fixed so it costs no layout. A rule of ours written as "every direct
+     child" outranks that class, drags the bubble into the flow as a 36px box, and
+     the list grows by a whole row -- every row below jumps down. Because the jump
+     moves the pointer off the row, the tooltip then hides, the layout springs
+     back, and the pointer is over the row again: an endless flicker. Only hosts
+     that keep the bubble as a list child ever showed it, which is why one version
+     had it and the other did not. */
+  const overlay = await evaluate(`(() => {
+    const nav = document.querySelector('nav[class*="panelList"]');
+    const bubble = nav.querySelector('.tb_bubble');
+    const rows = [...nav.querySelectorAll('button[class*="panelRow"]')];
+    return {
+      present: !!bubble,
+      position: bubble ? getComputedStyle(bubble).position : null,
+      width: bubble ? Math.round(bubble.getBoundingClientRect().width) : null,
+      rowTops: rows.map((b) => Math.round(b.getBoundingClientRect().top)),
+      navHeight: Math.round(nav.getBoundingClientRect().height),
+      rail: nav.dataset.sncRail || null,
+      editing: nav.dataset.sncEditing || null,
+    };
+  })()`);
+  check('a host tooltip bubble in the list is never pulled into the layout', () => {
+    assert.equal(overlay.present, true, 'the fixture carries the host bubble');
+    assert.equal(overlay.editing, 'true', 'this is the edit state that styles list children');
+    /* 40px wide is its own padding + text; 36 would mean our rule resized it */
+    assert.equal(overlay.position, 'fixed',
+      `the bubble must stay out of flow, it is at ${overlay.position}`);
+    assert.notEqual(overlay.width, 36, 'the bubble must keep its own width, not a rail row width');
+    /* …and the rows above it must not be displaced: an in-flow bubble would add
+       one row-height plus the gap, so ONE pitch between consecutive rows would be
+       roughly double the others. Uniform pitch is the whole assertion. */
+    const pitches = overlay.rowTops.slice(1).map((t, i) => t - overlay.rowTops[i]);
+    assert.ok(pitches.every((p) => p === pitches[0]),
+      `every row keeps the same pitch, got ${pitches.join(',')}`);
+  }, () => overlay);
+
+  /* ---- …and reordering leaves that overlay exactly where the host put it ---
+     The reorder used to lift our own header out, append every unit, then put the
+     header back. Everything else the host keeps in the list was swept to the
+     front by that append loop: a saved order replayed at boot moved the tooltip
+     bubble from last child to first. The fix reorders IN PLACE, refilling the
+     slots the units already occupy, so a host child never moves. */
+  const overlayOrder = await evaluate(`(() => {
+    const nav = document.querySelector('nav[class*="panelList"]');
+    const before = [...nav.children].map((el) => el.classList.contains('snc-group') ? 'GROUP'
+      : el.classList.contains('tb_bubble') ? 'BUBBLE'
+      : (el.getAttribute('aria-label') || el.querySelector('button[class*="panelRow"]')?.getAttribute('aria-label') || '?'));
+    return { before, record: JSON.parse(localStorage.getItem(${JSON.stringify(STORE)}) || 'null') };
+  })()`);
+  if (overlayOrder.record) {
+    /* A stored order that differs from the DOM, replayed at boot: that is the path
+       which actually runs the reorder loop. boot() is the fixture's own way in --
+       it seeds the record before the plugin starts -- so no reload is needed and
+       the real record can be put back the same way afterwards. */
+    const reversed = { ...overlayOrder.record, order: PANELS.slice().reverse() };
+    await boot(reversed);
+    const after = await evaluate(`(() => {
+      const nav = document.querySelector('nav[class*="panelList"]');
+      return {
+        index: [...nav.children].findIndex((el) => el.classList.contains('tb_bubble')),
+        total: nav.children.length,
+        order: [...nav.children].map((el) => el.classList.contains('snc-group') ? 'GROUP'
+          : el.classList.contains('tb_bubble') ? 'BUBBLE'
+          : (el.getAttribute('aria-label') || el.querySelector('button[class*="panelRow"]')?.getAttribute('aria-label') || '?')),
+      };
+    })()`);
+    check('replaying a saved order never moves a host child of the list', () => {
+      assert.ok(after.index >= 0, 'the bubble is still in the list');
+      assert.equal(after.index, after.total - 1,
+        `the bubble must stay where the host put it, at the end (index ${after.index} of ${after.total})`);
+      /* and the rows really did re-order, or this check would pass vacuously */
+      const rows = after.order.filter((k) => k !== 'GROUP' && k !== 'BUBBLE');
+      const host = overlayOrder.before.filter((k) => k !== 'GROUP' && k !== 'BUBBLE');
+      assert.notDeepEqual(rows, host, `the replay must have taken effect (${rows.join(',')})`);
+    }, () => after);
+    /* put the real record back, then the edit/rail state this block found */
+    await boot(overlayOrder.record);
+    await evaluate(`(() => {
+      document.querySelector('#side')?.classList.add('wtg9ga_collapsed');
+      document.querySelector('.snc-bud')?.click();
+    })()`);
+    await new Promise((r) => setTimeout(r, 150));
+  }
+
+
+
+  /* leave edit, then widen again: the wide layout has to come back untouched */
+  await evaluate(`document.querySelector('.snc-bud').click()`);
+  await new Promise((r) => setTimeout(r, 80));
+  await evaluate(`document.querySelector('#side').classList.remove('wtg9ga_collapsed')`);
+  await new Promise((r) => setTimeout(r, 120));
+  s = await snapshot();
+  check('expanding the sidebar again restores both controls', () => {
+    assert.equal(s.railState.flag, null, 'the flag is dropped, not left behind');
+    assert.equal(s.railState.laidBuds, 1, 'the gear is back');
+    assert.equal(s.railState.laidChevs, 1, 'the arrow is back');
+    assert.notEqual(s.railState.caption.display, 'none', 'the caption is back');
+    assert.equal(s.railState.chev.width, 28, `wide pocket is 28px again (${s.railState.chev.width})`);
+  }, () => s.railState);
+  /* Back to a clean wide boot. The drag section above already left its order in
+     the record, and section 10 asserts on that exact order, so the record is NOT
+     cleared here -- boot() with no argument wipes localStorage, which would turn
+     the final "the order survived unload" check into a false pass. */
+  await evaluate(`document.querySelector('#side').classList.remove('wtg9ga_collapsed')`);
+  await new Promise((r) => setTimeout(r, 60));
+
+  /* ---- 9b. a host re-render while editing must not throw -------------------
      The reported bug: with rows wrapped in our own elements, React still held a
      reference to the wrapped button, so the first re-render that removed or
      re-inserted it threw NotFoundError and blanked the whole header. Nothing we
@@ -638,24 +1190,43 @@ try {
     const nav = document.querySelector('nav[class*="panelList"]');
     // React owns the nav's children, and on 0.2.2-rc.2 a row's child is the
     // entry wrapper, not the button: remove and re-insert the unit itself
-    const unit = [...nav.children]
+    const hostKid = (el) => !el.classList.contains('snc-group')
+      && (el.matches('button[class*="panelRow"]')
+        || !!el.querySelector(':scope > button[class*="panelRow"]'));
+    const unit = [...nav.children].filter(hostKid)
       .find((el) => el.querySelector('button[class*="panelRow"][aria-label="上下文洞察"]'));
     const next = unit.nextElementSibling;
     let threw = null;
     try {
       nav.removeChild(unit);
+      // insertBefore(node, null) appends -- the same call React makes when the
+      // unit it re-inserts is the last one. Our row must survive that untouched.
       nav.insertBefore(unit.cloneNode(true), next);
     } catch (error) { threw = String(error); }
+    const entries = [...nav.children].filter(hostKid);
     return {
       threw,
-      rows: nav.children.length,
-      owned: [...nav.children].every((el) => !!el.querySelector(':scope > .snc-ctl')),
+      rows: entries.length,
+      owned: entries.every((el) => !!(el.querySelector(':scope > button[class*="panelRow"] > .snc-ctl')
+        || el.querySelector(':scope > .snc-ctl'))),
+      /* the row is still the list's FIRST child after all that: React inserting
+         or removing entries must never displace it or throw */
+      groupFirst: nav.firstElementChild?.classList?.contains('snc-group') || false,
+      rowCount: nav.querySelectorAll('.snc-group').length,
+      firstEl: (() => {
+        const f = nav.firstElementChild;
+        return f ? (f.tagName + '.' + String(f.className)).slice(0, 70) : null;
+      })(),
+      childOrder: [...nav.children].map((el) =>
+        (el.getAttribute('aria-label') || el.querySelector('button[class*="panelRow"]')?.getAttribute('aria-label') || el.className || el.tagName).slice(0, 30)),
     };
   })()`);
   check('a host re-render while editing neither throws nor strands a control', () => {
     assert.equal(rerender.threw, null, 'the row was still where the host left it');
     assert.equal(rerender.rows, PANELS.length + 1, 'the list is intact');
     assert.equal(rerender.owned, true, 'every row still carries its own controls');
+    assert.equal(rerender.groupFirst, true, 'and our row is still the list first child');
+    assert.equal(rerender.rowCount, 1, 'the re-render did not duplicate the row');
   }, () => rerender);
 
   /* ---- 10. disabling the plugin hands the DOM back untouched ---- */
@@ -667,7 +1238,8 @@ try {
     assert.deepEqual(s.order, ['更多', '任务看板', '插件', '插件市场', '上下文洞察', '自动化任务']);
     assert.equal(s.anchorParent, 'NAV');
     assert.equal(s.anchorInsideNav, true);
-    assert.equal(s.editing, undefined, 'no shell left behind');
+    assert.equal(s.editing, undefined, 'no editing flag left on the host list');
+    assert.equal(s.groupFirst, false, 'and no row left inside it');
     assert.equal(s.viewRow.parent, 'an3WzG_tabs', 'the launcher is bare again');
     assert.equal(s.viewRow.isRowChild, true);
     assert.equal(s.viewRow.buttonWidth, 22);

@@ -51,19 +51,28 @@ const recV1 = (over = {}) => ({ v: 1, folded: false, hidden: [], views: [], ...o
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 const cssOf = (doc) => doc.querySelector('style[data-plugin-css="dsh-sidebar-manager"]').textContent;
 const rows = (doc) => [...doc.querySelectorAll('nav button[class*="panelRow"]')];
-const shadow = (doc) => doc.querySelector('.snc-shell');
+/* The row is now a child of the host's own list, and the state flags
+   (data-snc-folded / -editing / -rail) live on that same host nav. These helpers
+   name that shape instead of the removed .snc-shell wrapper. */
+const hostNav = (doc) => doc.querySelector('nav[class*="panelList"]');
+const rowOf = (doc) => doc.querySelector('.snc-group');
+/* the state carrier, i.e. what the old `shell` variable used to point at.
+   Named `shadow` still because every assertion below reads its dataset. */
+const shadow = hostNav;
 const group = (doc) => doc.querySelector('.snc-group');
 const gear = (doc) => doc.querySelector('.snc-bud');
 
-test('wraps the host panel list and adds a group row plus a gear', () => {
+test('adds a group row as the first child of the host panel list', () => {
   const { doc, dispose } = start();
-  const shell = shadow(doc);
-  assert.ok(shell, 'wrapper exists');
-  // the host nav must stay a direct child of our wrapper, untouched inside
-  const nav = shell.querySelector('nav[class*="panelList"]');
-  assert.ok(nav, 'host nav moved under the wrapper');
-  assert.equal(nav.children.length, 6, 'host nav keeps only its own rows');
-  assert.equal(shell.parentElement.tagName, 'BODY');
+  const nav = hostNav(doc);
+  assert.ok(nav, 'the host nav is where the host put it');
+  assert.ok(rowOf(doc), 'the group row exists');
+  /* the row lives INSIDE the list: no host node is ever re-parented, which is
+     what makes a React insertBefore anchored on the nav always resolvable */
+  assert.equal(rowOf(doc).parentElement, nav, 'the row is a child of the nav');
+  assert.equal(nav.firstElementChild, rowOf(doc), 'and it is the list\'s first child');
+  assert.equal(nav.children.length, 7, 'the host nav keeps its 6 rows, plus our row');
+  assert.equal(nav.parentElement.tagName, 'BODY', 'the nav itself never moves');
   // group row mirrors a native panelRow box model (rc.2: 32px, 5px padding)
   const css = cssOf(doc);
   const groupRule = css.slice(css.indexOf('.snc-group {'), css.indexOf('}', css.indexOf('.snc-group {')));
@@ -87,39 +96,49 @@ test('wraps the host panel list and adds a group row plus a gear', () => {
 /* 0.2.2-rc.2 rebuilt the sidebar scroll body as a placed CSS Grid: .scrollArea
    carries grid-template-columns 4px minmax(0,1fr) … / grid-template-rows
    8px max-content 2px max-content, and the host's own two children claim their
-   cells (.panelList 2/2, .regionArea 2/4). An unplaced wrapper auto-flows into
-   column 1 (the 4px gutter) and row 1 (8px), which is what squeezed the whole
-   list into a strip over the caption and made it unclickable. The wrapper must
-   therefore carry the list's cell, and rc.1's flex host must be unaffected:
-   a flex item ignores grid-column/grid-row, so the same rule is inert there. */
+   cells (.panelList 2/2, .regionArea 2/4). The old wrapper had to take the
+   list's cell or it auto-flowed into the 4px gutter and squeezed the list into a
+   strip over the caption.
+
+   That whole class of failure is gone now that the row lives INSIDE the nav: the
+   nav keeps its cell, the row inherits it, and there is no placement left to get
+   wrong. These two tests therefore assert the ABSENCE of the mechanism -- if a
+   future edit reintroduces inline grid placement or a wrapper, they fail. */
 const grid = (names = ['插件', '自动化任务', '任务看板']) =>
   `<div class="scrollArea" style="display:grid;grid-template-columns:4px minmax(0,1fr) 6px;grid-template-rows:8px max-content 2px max-content">` +
   `<nav class="_2H3hWW_panelList" aria-label="全局面板" style="grid-column:2;grid-row:2">${names.map(panel).join('')}</nav>` +
   `</div>`;
 
-test('the wrapper takes the cell the host gave the panel list', () => {
+test('a placed grid host needs no placement from us: the row rides inside the list', () => {
   const { doc, dispose } = start(grid());
+  const nav = hostNav(doc);
   const css = cssOf(doc);
-  const shellRule = css.slice(css.indexOf('.snc-shell {'), css.indexOf('}', css.indexOf('.snc-shell {')));
-  /* the default placement is the panel list's own cell on 0.2.2-rc.2 */
-  assert.match(shellRule, /grid-column:\s*2/, 'column 2 is the content column, not the 4px gutter');
-  assert.match(shellRule, /grid-row:\s*2/, 'row 2 is the list row, not the 8px spacer');
-  /* and the live placement of the host list is mirrored onto the wrapper, so a
-     host that ever moves the list to another cell drags the wrapper with it */
-  const shell = shadow(doc);
-  assert.equal(shell.style.gridColumn, '2');
-  assert.equal(shell.style.gridRow, '2');
+  assert.equal(nav.style.gridColumn, '2', 'the host list keeps its own cell, untouched');
+  assert.equal(nav.style.gridRow, '2');
+  assert.equal(nav.parentElement.className, 'scrollArea', 'the nav is still the grid item');
+  assert.equal(rowOf(doc).parentElement, nav, 'the row is inside the list, so it inherits the cell');
+  /* nothing of ours carries a cell any more */
+  assert.equal(css.includes('grid-column'), false, 'no grid placement in our stylesheet');
+  assert.equal(css.includes('grid-row:'), false, 'no grid placement in our stylesheet');
   dispose();
 });
 
-test('on a flex host the placement copy stays out of the way', () => {
-  /* rc.1 hosts the list in a plain column flex; computed placement is "auto"
-     there, and writing that inline would override the stylesheet's default */
-  const { doc, dispose } = start();
-  const shell = shadow(doc);
-  assert.equal(shell.style.gridColumn, '', 'no inline override on a flex host');
-  assert.equal(shell.style.gridRow, '', 'no inline override on a flex host');
-  dispose();
+test('no inline grid placement is ever written, on a grid host or a flex one', () => {
+  /* the old build mirrored the nav's computed placement onto its wrapper, which
+     is exactly the code that broke when the host moved the list. It is gone. */
+  for (const html of [grid(), navigation()]) {
+    const { doc, dispose } = start(html);
+    const code = fs.readFileSync(path, 'utf8');
+    assert.equal(/copyPlacement|gridColumn|gridRow/.test(code), false,
+      'the plugin ships no placement-copying code');
+    /* nothing OF OURS carries a cell. The host nav may well carry its own (that
+       is the fixture's own inline style, not ours), so this checks our row. */
+    const ours = rowOf(doc);
+    assert.ok(ours, 'the row exists');
+    assert.equal(ours.style.gridColumn, '', 'the row carries no inline grid cell');
+    assert.equal(ours.style.gridRow, '', 'the row carries no inline grid cell');
+    dispose();
+  }
 });
 
 test('the group row is the toggle: starts expanded and folds the list', () => {
@@ -127,7 +146,7 @@ test('the group row is the toggle: starts expanded and folds the list', () => {
   const shell = shadow(doc);
   assert.equal(group(doc).getAttribute('aria-expanded'), 'true');
   assert.equal(shell.dataset.sncFolded, 'false');
-  assert.match(cssOf(doc), /\[data-snc-folded="true"\]\s*>\s*nav\[class\*="panelList"\]\s*\{\s*display:\s*none/);
+  assert.match(cssOf(doc), /\[data-snc-folded="true"\]:not\(\[data-snc-editing="true"\]\)\s*>\s*:not\(\.snc-group\)\s*\{\s*display:\s*none/);
 
   group(doc).click();
   assert.equal(shell.dataset.sncFolded, 'true');
@@ -242,7 +261,7 @@ test('the expanded header carries no fill and no rule at all', () => {
      and only the pointer lights it up. */
   assert.equal(/\.snc-group\[aria-expanded="[a-z]+"\]\s*\{/.test(css), false,
     'no rule may style the row by its expanded state');
-  assert.equal(/\.snc-shell\[data-snc-folded="[a-z]+"\]\s*>\s*\.snc-group\s*\{/.test(css), false,
+  assert.equal(/nav\[class\*="panelList"\]\[data-snc-folded="[a-z]+"\]\s*>\s*\.snc-group\s*\{/.test(css), false,
     'no rule may style the row by its fold state');
   assert.equal(/\.snc-group\s*\{[^}]*background-image/.test(css), false,
     'the row draws no rule of its own');
@@ -296,8 +315,19 @@ test('the caption sits on the section-label indent, not on the row indent', () =
 test('the chevron ink lands on the host icon rail, not just its box', () => {
   const { doc, dispose } = start(both());
   const css = cssOf(doc);
-  const at = css.lastIndexOf('.snc-chev {');
-  const chev = css.slice(at, css.indexOf('}', at) + 1);
+  /* the BASE pocket rules, matched by their whole selector. They used to be found
+     with lastIndexOf('.snc-chev {'), which now also matches the rail override
+     `.snc-shell[data-snc-rail="true"] .snc-chev { ... }` and would have measured
+     the rail geometry as if it were the wide one. The pocket is declared in two
+     blocks (the shared box, then the chevron's own margin), so every block whose
+     selector is exactly the base one is collected. */
+  const base = (selector) => {
+    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const found = [...css.matchAll(new RegExp('(?:^|\\n)' + escaped + ' \\{[^}]*\\}', 'g'))];
+    assert.ok(found.length > 0, `the base ${selector} rule exists`);
+    return found.map((m) => m[0]).join('\n');
+  };
+  const chev = base('.snc-chev');
   const budAt = css.indexOf('.snc-bud { margin-right');
   const bud = css.slice(budAt, css.indexOf('\n', budAt));
   /* Equal boxes is not equal pixels. The host's 16px action glyphs keep ~1px of
@@ -403,7 +433,7 @@ test('hidden extensions stay reachable while editing so they can be restored', (
   const row = rows(doc).find((r) => r.getAttribute('aria-label') === '记忆系统');
   assert.equal(row.dataset.sncHidden, 'true');
   const css = cssOf(doc);
-  const ruleStart = css.indexOf('.snc-shell[data-snc-editing="true"] > nav[class*="panelList"]');
+  const ruleStart = css.indexOf('nav[class*="panelList"][data-snc-editing="true"]');
   assert.ok(ruleStart >= 0, 'edit-mode override rule exists');
   assert.match(css.slice(ruleStart), /display:\s*flex\s*!important/);
   gear(doc).click();
@@ -417,7 +447,11 @@ test('hidden extensions stay reachable while editing so they can be restored', (
    host does not render as a bare button, so a walk that only looked at
    `nav > button.panelRow` never saw it: no checkbox, no handle, and the order
    replay (which appends every unit it knows) lifted it above the list. */
+/* the host's entry order. Our group row is a child of the list (that is the whole
+   fix), but it is a header rather than an entry, so every order assertion skips
+   it -- otherwise it would read as a mysterious extra "收起扩展管理" entry. */
 const navOrder = (doc) => [...doc.querySelector('nav[class*="panelList"]').children]
+  .filter((el) => !el.classList.contains('snc-group'))
   .map((el) => ((el.getAttribute('aria-label') || '') ||
     (el.querySelector('button[class*="panelRow"]')?.getAttribute('aria-label') || '')).trim());
 
@@ -427,8 +461,14 @@ test('a row the host wraps in an anchor is still an entry', () => {
   const anchor = doc.querySelector('[class*="moreAnchor"]');
   assert.ok(anchor, 'the host anchor survives');
   assert.equal(anchor.parentElement.tagName, 'NAV', 'and stays exactly where the host put it');
-  const ctl = anchor.querySelector(':scope > .snc-ctl');
+  /* the controls live inside the ROW BUTTON, exactly as on every other entry:
+     putting them on the anchor would turn it into [controls][button] and push
+     the button's own inset out of line with the rows above (0.2.1-rc.5, where
+     rows are bare buttons, is the case that shows it) */
+  const ctl = anchor.querySelector(':scope > button[class*="panelRow"] > .snc-ctl');
   assert.ok(ctl, 'the more entry gets controls like every other row');
+  assert.equal(anchor.querySelector(':scope > .snc-ctl'), null,
+    'and they are not left on the anchor itself');
   const box = ctl.querySelector('[data-snc-check]');
   assert.ok(box, 'a checkbox');
   assert.equal(box.checked, true);
@@ -441,7 +481,7 @@ test('a row the host wraps in an anchor is still an entry', () => {
 test('hiding the more entry takes its anchor with it, and gives it back', async () => {
   const { doc, dom, dispose } = start(navigationWithMore());
   gear(doc).click();
-  const box = doc.querySelector('[class*="moreAnchor"] > .snc-ctl > [data-snc-check]');
+  const box = doc.querySelector('[class*="moreAnchor"] > button[class*="panelRow"] > .snc-ctl > [data-snc-check]');
   box.checked = false;
   box.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   await flush();
@@ -451,9 +491,19 @@ test('hiding the more entry takes its anchor with it, and gives it back', async 
   assert.equal(unit.parentElement.tagName, 'NAV', 'the anchor is the unit, not its button');
   assert.equal(unit.dataset.sncHidden, 'true', 'the flag sits on what is actually hidden');
   const css = cssOf(doc);
-  const ruleStart = css.indexOf('nav[class*="panelList"] > button[class*="panelRow"][data-snc-hidden="true"]');
+  const ruleStart = css.indexOf('nav[class*="panelList"]:not([data-snc-editing="true"]) > [data-snc-unit="true"][data-snc-hidden="true"]');
+  assert.ok(ruleStart >= 0, 'the hiding rule exists');
+  /* One rule for every row shape: the mark build() publishes says which children
+     are rows, so a bare button, an entry wrapper and our anchor are all covered
+     without naming them here -- and a host overlay that is NOT a row is not. */
   assert.match(css.slice(ruleStart, css.indexOf('}', ruleStart)),
-    /:has\(> button\[class\*="panelRow"\]\)\[data-snc-hidden="true"\]/, 'a wrapper that owns a row is hidden too');
+    /\[data-snc-unit="true"\]\[data-snc-hidden="true"\]/, 'any row unit is hidden, whatever its shape');
+  assert.equal(unit.getAttribute('data-snc-unit'), 'true',
+    'a host unit is marked as one, which is what the rule reads');
+  /* and the rule must not fight edit mode: it is excluded there, so a hidden row
+     can always be reached again to restore it */
+  assert.match(css.slice(ruleStart, ruleStart + 120), /:not\(\[data-snc-editing="true"\]\)/,
+    'the hiding rule steps aside while editing');
   dispose();
 });
 
@@ -466,7 +516,9 @@ test('a row the host removes mid-edit leaves nothing behind', async () => {
   await flush();
   assert.equal(doc.querySelectorAll('.snc-ctl').length, 3, 'only the remaining rows keep controls');
   assert.equal(doc.querySelectorAll('[data-snc-check]').length, 3, 'and no control outlives its row');
-  assert.equal(doc.querySelectorAll('nav > *').length, 3, 'nothing is left in the list');
+  /* the host's entries only: our group row is a permanent child of the list, so
+     it is not "something left behind" -- count what the host put there */
+  assert.equal(doc.querySelectorAll('nav > :not(.snc-group)').length, 3, 'nothing is left in the list');
   dispose();
 });
 
@@ -482,8 +534,9 @@ test('a folded list still expands into edit mode so the gear stays usable', () =
   const { doc, dispose } = start(undefined, rec({ folded: true }));
   const shell = shadow(doc);
   assert.equal(shell.dataset.sncFolded, 'true');
-  // folding is CSS; the editing flag must win over it
-  assert.match(cssOf(doc), /data-snc-editing="true"\]\s*>\s*nav\[class\*="panelList"\]\s*\{\s*display:\s*flex\s*!important/);
+  // folding is CSS; the editing flag must win over it. The folded rule excludes
+  // edit mode, and this rule re-opens the list (the host may have hidden it).
+  assert.match(cssOf(doc), /nav\[class\*="panelList"\]\[data-snc-editing="true"\]\s*\{\s*display:\s*flex\s*!important/);
   gear(doc).click();
   assert.equal(doc.querySelectorAll('[data-snc-check]').length, 6);
   dispose();
@@ -531,8 +584,8 @@ test('survives a sidebar remount and ignores unknown entries', async () => {
   const nextRows = next.querySelectorAll('button[class*="panelRow"]');
   assert.equal(nextRows[0].dataset.sncHidden, 'true');
   assert.equal(nextRows[1].hasAttribute('data-snc-hidden'), false);
-  // one shell per wrapper, one gear per shell
-  assert.equal(doc.querySelectorAll('.snc-shell').length, 1);
+  // exactly one row, and exactly one gear in it
+  assert.equal(doc.querySelectorAll('.snc-group').length, 1, 'one row per list');
   assert.equal(doc.querySelectorAll('.snc-bud').length, 1);
   dispose();
 });
@@ -542,26 +595,36 @@ test('host disable restores the DOM completely', async () => {
   gear(doc).click();
   assert.equal(doc.querySelectorAll('.snc-ctl').length, 6);
   dispose();
-  assert.equal(doc.querySelector('.snc-shell'), null);
+  assert.equal(doc.querySelector('.snc-group'), null, 'the row is removed');
   assert.equal(doc.querySelector('.snc-bud'), null);
-  assert.equal(doc.querySelector('.snc-group'), null);
   assert.equal(doc.querySelector('[data-plugin-css="dsh-sidebar-manager"]'), null);
   assert.equal(doc.querySelectorAll('.snc-ctl').length, 0);
   assert.equal(doc.querySelectorAll('[data-snc-check]').length, 0);
-  // the nav is put back exactly where it was, children untouched
+  // the host list is left exactly as the host rendered it: same parent, same
+  // children, and none of our state attributes left behind
   const nav = doc.querySelector('nav');
   assert.equal(nav.parentElement.tagName, 'BODY');
   assert.equal(nav.children.length, 6);
+  assert.equal(nav.hasAttribute('data-snc-folded'), false, 'no state left on the host list');
+  assert.equal(nav.hasAttribute('data-snc-editing'), false);
+  assert.equal(nav.hasAttribute('data-snc-rail'), false);
+  assert.equal(nav.style.length, 0, 'and none of the measured custom properties');
+  /* the row marks live on the host's own children, so they have to be lifted too:
+     a marker we leave behind is a mutation the host never asked for */
+  assert.equal(nav.querySelectorAll('[data-snc-unit]').length, 0, 'no row marks left on host rows');
+  assert.equal(nav.querySelectorAll('[data-snc-hidden]').length, 0);
   doc.body.insertAdjacentHTML('beforeend', navigation(['Late plugin']));
   await flush();
-  assert.equal(doc.querySelectorAll('.snc-shell').length, 0);
+  assert.equal(doc.querySelectorAll('.snc-group').length, 0, 'a list mounted after teardown stays untouched');
 });
 
 test('English label is also matched without touching unrelated nav', () => {
   const { doc, dispose } = start(`<nav class="_2H3hWW_panelList" aria-label="Global panels">${panel('Plugins')}</nav><nav class="_2H3hWW_panelList" aria-label="Local">${panel('Local')}</nav>`);
-  assert.equal(doc.querySelectorAll('.snc-shell').length, 1);
-  assert.equal(doc.querySelector('.snc-shell').querySelector('nav').getAttribute('aria-label'), 'Global panels');
+  assert.equal(doc.querySelectorAll('.snc-group').length, 1, 'only the managed list gets a row');
+  assert.equal(rowOf(doc).closest('nav').getAttribute('aria-label'), 'Global panels');
   assert.equal(doc.querySelector('nav[aria-label="Local"]').parentElement.tagName, 'BODY');
+  assert.equal(doc.querySelector('nav[aria-label="Local"]').querySelector('.snc-group'), null,
+    'the unmanaged nav gets no row');
   dispose();
 });
 
@@ -911,7 +974,7 @@ test('the two stores stay independent inside the one record', () => {
   panelBox.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
   assert.deepEqual(stateOf(dom.window).hidden, ['插件']);
   assert.deepEqual(stateOf(dom.window).views, [], 'view list untouched by a panel toggle');
-  assert.equal(doc.querySelectorAll('.snc-shell').length, 1);
+  assert.equal(doc.querySelectorAll('.snc-group').length, 1, 'one row per managed list');
   dispose();
 });
 
@@ -1015,7 +1078,7 @@ test('hidden tabs carry no extra decoration, only the fade the sidebar uses', ()
   const rule = css.slice(ruleStart, css.indexOf('}', ruleStart));
   assert.match(rule, /opacity:\s*\.45/);
   // the sidebar row rule is the reference the tab must match
-  const rowStart = css.indexOf('nav[class*="panelList"] > [data-snc-hidden="true"]');
+  const rowStart = css.indexOf('nav[class*="panelList"][data-snc-editing="true"] > [data-snc-hidden="true"]');
   assert.ok(rowStart >= 0, 'hidden-row rule exists');
   assert.match(css.slice(rowStart, css.indexOf('}', rowStart)), /opacity:\s*\.45/);
   gear(doc).click();
@@ -1066,7 +1129,13 @@ const dragHandles = (doc) => [...doc.querySelectorAll('nav[class*="panelList"] .
 const stubRects = (win, elements, axis = 'y', step = 40, size = 36) => {
   for (const el of elements) {
     el.getBoundingClientRect = () => {
-      const siblings = [...el.parentElement.children].filter((c) => typeof c.getBoundingClientRect === 'function' && c.isConnected);
+      /* The group row is a child of this list too, but it is a header, not one of
+         the entries these boxes describe: counting it would shift every entry's
+         synthetic box down by one step and the coordinates below would stop
+         meaning "the i-th entry". Excluded so the geometry stays about entries. */
+      const siblings = [...el.parentElement.children]
+        .filter((c) => typeof c.getBoundingClientRect === 'function' && c.isConnected)
+        .filter((c) => !c.classList.contains('snc-group'));
       const index = Math.max(0, siblings.indexOf(el));
       const start = index * step;
       return axis === 'y'
@@ -1593,7 +1662,7 @@ test('the host\'s anchor-wrapped row toggles from its whole row, controls and ga
   const { doc, dom, dispose } = start(navigationWithMore());
   gear(doc).click();
   const anchor = doc.querySelector('[class*="moreAnchor"]');
-  const ctl = anchor.querySelector(':scope > .snc-ctl');
+  const ctl = anchor.querySelector(':scope > button[class*="panelRow"] > .snc-ctl');
   /* the slot is a child of the anchor, not of the inner button: this press used
      to be swallowed without toggling anything, while the same spot toggles on
      every other row */
@@ -1605,4 +1674,214 @@ test('the host\'s anchor-wrapped row toggles from its whole row, controls and ga
   assert.equal(anchor.hasAttribute('data-snc-hidden'), false, 'and the anchor gap toggles it back');
   assert.deepEqual(stateOf(dom.window).hidden, []);
   dispose();
+});
+
+/* ---------------------- the host's rail --------------------------------------
+   The host collapses its own sidebar to a 56px icon rail by swapping its root
+   class to the "collapsed" one; the column we live in is then 36px wide. Two
+   28px pockets plus a caption is 56px of fixed ink, so the wide shape cannot
+   survive there: the row has to drop to exactly one control.
+
+   jsdom does not lay anything out, so what is asserted here is the part it CAN
+   answer -- which state the plugin publishes and which rules the stylesheet
+   carries for it. The pixel half (36x36 boxes, no overhang) lives in
+   test/browser-check.mjs, where a real cascade exists. */
+
+const railHtml = (collapsed) => {
+  const nav = navigation();
+  return `<div id="frame"><div id="side" class="${collapsed ? '_2H3hWW_root _2H3hWW_collapsed' : '_2H3hWW_root'}">${nav}</div></div>`;
+};
+
+test('a quiet wide sidebar publishes no rail flag', () => {
+  const { doc, dispose } = start(railHtml(false));
+  assert.equal(shadow(doc).dataset.sncRail, undefined, 'no flag on a wide sidebar');
+  dispose();
+});
+
+test('a collapsed host sidebar puts the rail flag on the wrapper', () => {
+  const { doc, dispose } = start(railHtml(true));
+  assert.equal(shadow(doc).dataset.sncRail, 'true', 'the collapsed class is the signal');
+  dispose();
+});
+
+test('the host collapsing after boot republishes the flag without a re-render', () => {
+  const { doc, dispose } = start(railHtml(false));
+  const shell = shadow(doc);
+  assert.equal(shell.dataset.sncRail, undefined);
+  /* the class flip is a pure attribute change: no childList mutation at all,
+     so a plugin that only watched child changes would sit on a stale flag */
+  doc.querySelector('#side').classList.add('_2H3hWW_collapsed');
+  return Promise.resolve().then(() => new Promise((resolve) => setTimeout(resolve, 20))).then(() => {
+    assert.equal(shadow(doc).dataset.sncRail, 'true', 'the class flip alone republished it');
+    doc.querySelector('#side').classList.remove('_2H3hWW_collapsed');
+    return new Promise((resolve) => setTimeout(resolve, 20));
+  }).then(() => {
+    assert.equal(shadow(doc).dataset.sncRail, undefined, 'and expanding drops it again');
+    dispose();
+  });
+});
+
+test('the rail flag never depends on a width measurement', () => {
+  const { doc, dispose } = start(railHtml(true));
+  /* The tempting test is "the sidebar is narrow, so rail". It is wrong: every
+     injector that adds DOM to the sidebar (this plugin included) can widen the
+     box being measured, so a width test reports "wide" exactly when the rail has
+     been polluted. jsdom reports a width of 0 for everything, so this test also
+     proves the flag survives the complete absence of layout information. */
+  const shell = shadow(doc);
+  assert.equal(shell.getBoundingClientRect().width, 0, 'jsdom lays nothing out');
+  assert.equal(shell.dataset.sncRail, 'true', 'the flag is read off the class, not the box');
+  dispose();
+});
+
+test('rail rules drop the caption and keep exactly one control per state', () => {
+  const { doc, dispose } = start(railHtml(true));
+  const css = cssOf(doc);
+  /* every rail rule is scoped to the HOST NAV, which is where the flag lives */
+  const NAV = 'nav\\[class\\*="panelList"\\]';
+  assert.match(css, new RegExp(`\\.snc-caption`), 'caption rule exists');
+  assert.match(css, new RegExp(`${NAV}\\[data-snc-rail="true"\\]\\s*\\.snc-caption\\s*\\{\\s*display:\\s*none`),
+    'no width for a caption in a rail');
+  /* the gear must leave the FLOW, not merely fade: an invisible 28px box still
+     eats the column and still overlaps its neighbour, which is the whole bug */
+  assert.match(css, new RegExp(`${NAV}\\[data-snc-rail="true"\\]:not\\(\\[data-snc-editing="true"\\]\\)\\s*\\.snc-bud\\s*\\{\\s*display:\\s*none`),
+    'the gear is out of the flow at rest');
+  /* editing inverts it: the gear is the only way out of the mode, and the arrow
+     cannot fold while editing anyway */
+  assert.match(css, new RegExp(`${NAV}\\[data-snc-rail="true"\\]\\[data-snc-editing="true"\\]\\s*\\.snc-chev\\s*\\{\\s*display:\\s*none`),
+    'the arrow yields to the gear while editing');
+  /* the surviving box is the host's own rail geometry, not the wide 28px pocket */
+  const pocketAt = css.indexOf('nav[class*="panelList"][data-snc-rail="true"] .snc-chev,');
+  assert.ok(pocketAt >= 0, 'the rail pocket rule exists');
+  const railPocket = css.slice(pocketAt, css.indexOf('}', pocketAt));
+  assert.match(railPocket, /width:\s*36px/);
+  assert.match(railPocket, /height:\s*36px/);
+  dispose();
+});
+
+/* A guard for a mistake that has now cost three debugging rounds: the stylesheet
+   is a template literal, so a backtick in one of its comments ends the string
+   early and the whole file stops parsing. `node --check` catches it, but only if
+   somebody runs it -- and when it happens the browser check silently loads no
+   plugin at all and every geometry assertion measures an empty page. */
+test('the stylesheet template carries no stray backtick in its comments', () => {
+  const code = fs.readFileSync(path, 'utf8');
+  const open = code.indexOf('const css = `');
+  assert.ok(open > 0, 'the stylesheet literal exists');
+  /* the literal must end at the first unescaped backtick after it */
+  const close = code.indexOf('`;', open + 12);
+  assert.ok(close > open, 'the stylesheet literal terminates');
+  const sheet = code.slice(open, close);
+  const inner = sheet.slice(sheet.indexOf('`') + 1);
+  assert.equal(inner.includes('`'), false,
+    'no backtick may appear inside the stylesheet: it would end the literal early');
+});
+
+test('the rail does not resurrect the width-based collapse signal it replaced', () => {  const { doc, dispose } = start(railHtml(true));
+  /* guard against the obvious regression: someone "fixing" the rail by measuring
+     the sidebar is reintroducing the trap troubleshooting.md records */
+  const code = fs.readFileSync(path, 'utf8');
+  assert.equal(/offsetWidth|clientWidth/.test(code), false,
+    'the plugin ships no width probe at all');
+  const css = cssOf(doc);
+  assert.equal(/@media[^{]*max-width[^{]*\{[^}]*snc-/.test(css), false,
+    'no viewport-width media query decides the layout');
+  dispose();
+});
+
+/* ---------------------- the version-proof invariant ------------------------
+   issue #3 was not "a rail bug" or "a 0.2.1-rc.5 bug": the plugin wrapped the
+   host's <nav> in a div of its own and moved the nav into it. React still
+   believed the nav was the sidebar root's child, so the first render that had to
+   insert a tooltip bubble with the nav as its anchor threw
+
+     NotFoundError: Failed to execute 'insertBefore' on 'Node':
+     The node before which the new node is to be inserted is not a child of this node.
+
+   and the host blanked the whole sidebar. The rule that prevents the entire class
+   of failure is layout-independent, so it can be asserted once and hold for every
+   DSH version, present and future:
+
+       THE PLUGIN NEVER CHANGES A HOST NODE'S PARENT.
+
+   These tests walk the whole page, remember every host node's parent, drive the
+   plugin through every state it has, and then require that nothing moved. They
+   do not know what the host looks like -- only that whatever it built stays put. */
+const hostNodes = (doc) => [...doc.querySelectorAll('body *')].filter((el) =>
+  !el.closest('.snc-group') && !el.classList.contains('snc-group'));
+
+const parentMap = (doc) => new Map(hostNodes(doc).map((el) => [el, el.parentElement]));
+
+const assertNothingReparented = (doc, before, when) => {
+  for (const [el, parent] of before) {
+    /* a node the host itself removed is not our doing, and it has no parent to
+       check; a node that still exists must still sit where the host put it */
+    if (!el.isConnected) continue;
+    assert.equal(el.parentElement, parent,
+      `${when}: host node <${el.tagName.toLowerCase()}${
+        el.className ? ' class="' + String(el.className).slice(0, 40) + '"' : ''
+      }> was re-parented`);
+  }
+};
+
+test('the plugin never changes a host node\'s parent, in any state', async () => {
+  /* railHtml is the fixture that carries a sidebar root to collapse; both() has
+     tabs as well, so use the rail fixture and add the strip for coverage of the
+     other container the plugin decorates. */
+  const { doc, dispose } = start(railHtml(false) + tabs());
+  const before = parentMap(doc);
+
+  /* every state the plugin can be in, driven the way a user drives it */
+  gear(doc).click();                 // edit mode on
+  assertNothingReparented(doc, before, 'after entering edit mode');
+  group(doc).click();                // fold gesture is inert while editing
+  assertNothingReparented(doc, before, 'after pressing the row while editing');
+  gear(doc).click();                 // edit mode off
+  assertNothingReparented(doc, before, 'after leaving edit mode');
+  group(doc).click();                // fold
+  assertNothingReparented(doc, before, 'after folding');
+  group(doc).click();                // unfold
+  assertNothingReparented(doc, before, 'after unfolding');
+  doc.querySelector('#side').classList.add('_2H3hWW_collapsed');   // rail
+  await flush();
+  assertNothingReparented(doc, before, 'after the host collapsed to a rail');
+  dispose();
+});
+
+test('a React insertBefore anchored on the nav can never go stale', () => {
+  const { doc, dispose } = start();
+  const nav = hostNav(doc);
+  const root = nav.parentElement;
+  /* the exact operation React performs when it commits a new sibling before the
+     list -- the tooltip bubble from issue #3. It must succeed, i.e. the anchor
+     really is a child of the parent React believes it belongs to. */
+  const bubble = doc.createElement('span');
+  bubble.className = '_bubble_44yfq_1';
+  assert.doesNotThrow(() => root.insertBefore(bubble, nav),
+    'inserting beside the nav must not throw NotFoundError');
+  /* and the reverse: React removing the list by reference must find it there */
+  assert.doesNotThrow(() => root.removeChild(nav));
+  assert.equal(nav.parentElement, null);
+  dispose();
+});
+
+test('unloading leaves every host node where the host put it', () => {
+  const { doc, dispose } = start(both());
+  const before = parentMap(doc);
+  gear(doc).click();
+  dispose();
+  assertNothingReparented(doc, before, 'after unload');
+  /* the list is still the host's, with the host's children and nothing of ours */
+  const nav = hostNav(doc);
+  assert.equal(nav.children.length, 6);
+  assert.equal(nav.querySelector('.snc-group'), null);
+});
+
+test('unloading drops the rail flag together with the row', () => {
+  const { doc, dispose } = start(railHtml(true));
+  const shell = shadow(doc);
+  assert.equal(shell.dataset.sncRail, 'true');
+  dispose();
+  assert.equal(doc.querySelector('.snc-group'), null, 'the row is removed');
+  assert.equal(doc.querySelector('nav[data-snc-rail]'), null, 'and so is the flag it carried');
 });
