@@ -42,7 +42,15 @@ const STORE = 'dsh-sidebar-nav-collapse:state';
 const row = (label) =>
   `<button type="button" class="wtg9ga_panelRow" aria-label="${label}">` +
   `<span class="wtg9ga_panelGlyph">▦</span><span class="wtg9ga_panelTitle">${label}</span></button>`;
-const entry = (label) => `<div class="wtg9ga_panelEntry wtg9ga_panelEntryWide">${row(label)}</div>`;
+/* The pin glyph DSH renders at a row's trailing edge. It is only present when the
+   fixture asks for it (`pins`), on purpose: adding a button to every entry would
+   re-open every layout assertion below against a host shape that no longer
+   matches the one they were written for. The pin checks opt in instead. */
+const pin = (label) =>
+  `<button type="button" class="wtg9ga_panelUnpin" aria-label="从侧边栏取消固定${label}">` +
+  `<span class="wtg9ga_panelPinGlyph">▮</span></button>`;
+const entry = (label, withPins = false) =>
+  `<div class="wtg9ga_panelEntry wtg9ga_panelEntryWide">${row(label)}${withPins ? pin(label) : ''}</div>`;
 const moreRow = (label = '更多') =>
   `<span class="wtg9ga_moreAnchor"><button type="button" class="wtg9ga_panelRow" aria-label="${label}" ` +
   `aria-haspopup="menu" aria-expanded="false"><span class="wtg9ga_panelGlyph">▦</span>` +
@@ -73,7 +81,7 @@ const ICON_GLASS =
   '<circle cx="7.1" cy="7.1" r="4.6" stroke="currentColor"/>' +
   '<path d="M10.5 10.5 14 14" stroke="currentColor"/></svg>';
 
-const page = (record) => `<!doctype html>
+const page = (record, withPins = false) => `<!doctype html>
 <html lang="zh"><head><meta charset="utf-8"><title>panel list fixture</title>
 <style>
   body { margin: 0; font: 13px/1.4 system-ui, sans-serif; }
@@ -189,7 +197,7 @@ const page = (record) => `<!doctype html>
   <div class="wtg9ga_scrollRegion">
     <div class="wtg9ga_scrollArea">
       <nav class="wtg9ga_panelList" aria-label="全局面板">
-        ${PANELS.map(entry).join('')}
+        ${PANELS.map((label) => entry(label, withPins)).join('')}
         ${moreRow()}
         <!-- 0.2.1-rc.5 renders the hover tooltip as a CHILD OF THE LIST, and it is
              position:fixed precisely so it costs no layout. Anything of ours that
@@ -226,6 +234,21 @@ const page = (record) => `<!doctype html>
 </script>
 <script>window.__ModuleLoader__ = { load: (m) => { window.__bundle = m; } };</script>
 <script src="/lib/client.js"></script>
+${withPins ? `<script>
+  /* The fixture host's OWN pin behaviour, installed BEFORE the plugin boots --
+     the same order the real app has, where React's handler is already listening
+     when a plugin mounts. The plugin replays a remembered pin by clicking this
+     button, so a handler attached afterwards would measure nothing and the row
+     would stay put: the check would pass or fail for the wrong reason. */
+  window.__pinPresses = 0;
+  document.addEventListener('click', (event) => {
+    const pin = event.target.closest && event.target.closest('button[class*="panelUnpin"]');
+    if (!pin) return;
+    window.__pinPresses += 1;
+    const unit = pin.closest('[class*="panelEntry"]');
+    if (unit) unit.remove();
+  }, true);
+</script>` : ''}
 <script>
   const client = window.__bundle.factory(() => { throw new Error('unexpected dependency'); });
   const disposers = [];
@@ -247,7 +270,7 @@ const server = createServer((req, res) => {
   }
   const record = url.searchParams.get('record');
   res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
-  res.end(page(record ? JSON.parse(record) : null));
+  res.end(page(record ? JSON.parse(record) : null, url.searchParams.get('pins') === '1'));
 });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const origin = `http://127.0.0.1:${server.address().port}/`;
@@ -315,8 +338,11 @@ try {
     if (result.exceptionDetails) throw new Error(JSON.stringify(result.exceptionDetails, null, 1));
     return result.result.value;
   };
-  const boot = async (record) => {
-    await call('Page.navigate', { url: record ? `${origin}?record=${encodeURIComponent(JSON.stringify(record))}` : origin });
+  const boot = async (record, withPins = false) => {
+    const query = [];
+    if (record) query.push(`record=${encodeURIComponent(JSON.stringify(record))}`);
+    if (withPins) query.push('pins=1');
+    await call('Page.navigate', { url: query.length > 0 ? `${origin}?${query.join('&')}` : origin });
     for (let i = 0; i < 100; i++) {
       if (await evaluate('window.__ready === true')) return;
       await new Promise((r) => setTimeout(r, 50));
@@ -1229,17 +1255,87 @@ try {
     assert.equal(rerender.rowCount, 1, 'the re-render did not duplicate the row');
   }, () => rerender);
 
-  /* ---- 10. disabling the plugin hands the DOM back untouched ---- */
+  /* ---- 9b. the host's pin glyph: remembered, and replayed onto the host ----
+     This closes a gap jsdom cannot: whether `button[class*="panelUnpin"]` really
+     resolves in Chromium's selector engine, whether the replay's own click
+     reaches the host's handler rather than our capture listener, and whether a
+     press inside the MutationObserver's walk re-enters and dies.
+     The fixture host behaves like the real one: pressing a pin removes that
+     entry from the list (see the script installed before the plugin boots).
+     Run LAST before unload, and on a fresh boot, so nothing here depends on the
+     state a previous section left behind. */
+  await boot(null, true);
+  const pinCount = await evaluate(`document.querySelectorAll('button[class*="panelUnpin"]').length`);
+  check('the pin glyph resolves in Chromium, one per row', () => {
+    assert.equal(pinCount, PANELS.length, `expected ${PANELS.length} pins, got ${pinCount}`);
+  }, () => ({ pinCount }));
+
+  /* press two pins by hand, the way a user would */
+  await evaluate(`
+    for (const label of ['插件', '任务看板']) {
+      const unit = [...document.querySelectorAll('[class*="panelEntry"]')]
+        .find((el) => el.querySelector('button[class*="panelRow"]')?.getAttribute('aria-label') === label);
+      unit.querySelector('button[class*="panelUnpin"]').click();
+    }
+  `);
+  await new Promise((r) => setTimeout(r, 150));
+  const pinned = await evaluate(`({
+    presses: window.__pinPresses,
+    pins: JSON.parse(localStorage.getItem(${JSON.stringify(STORE)})).pins,
+    remaining: [...document.querySelectorAll('nav[class*="panelList"] button[class*="panelRow"]')]
+      .map((b) => b.getAttribute('aria-label')),
+  })`);
+  check('a manual press reaches the host and is recorded as a pin', () => {
+    assert.equal(pinned.presses, 2, `the host saw both presses, saw ${pinned.presses}`);
+    assert.deepEqual([...pinned.pins].sort(), ['任务看板', '插件'].sort(), `pins=${JSON.stringify(pinned.pins)}`);
+    assert.equal(pinned.remaining.includes('插件'), false, 'the host took it out of the list');
+    assert.equal(pinned.remaining.includes('任务看板'), false, 'and the other one too');
+  }, () => pinned);
+
+  /* the reload: the host forgot (every row is back), the plugin must press the
+     remembered ones again -- two of them, which is what a one-shot replay over a
+     stale snapshot could never do */
+  await boot({ v: 3, folded: false, hidden: [], views: [], actions: [], order: [], orderViews: [], pins: ['插件', '任务看板'] }, true);
+  await new Promise((r) => setTimeout(r, 250));
+  const afterBoot = await evaluate(`({
+    presses: window.__pinPresses,
+    remaining: [...document.querySelectorAll('nav[class*="panelList"] button[class*="panelRow"]')]
+      .map((b) => b.getAttribute('aria-label')),
+    pins: JSON.parse(localStorage.getItem(${JSON.stringify(STORE)})).pins,
+  })`);
+  check('a boot replays every remembered pin through the host control', () => {
+    assert.equal(afterBoot.presses, 2, `expected 2 replayed presses, got ${afterBoot.presses}`);
+    assert.equal(afterBoot.remaining.includes('插件'), false, '插件 was unpinned again');
+    assert.equal(afterBoot.remaining.includes('任务看板'), false, 'so was 任务看板');
+    assert.equal(afterBoot.remaining.includes('插件市场'), true, 'and nothing else moved');
+  }, () => afterBoot);
+
+  /* ---- 10. disabling the plugin hands the DOM back untouched ----
+     A fresh, pin-free boot with a known drag: the unload assertions below were
+     written against exactly that state, so the pin section above must not be the
+     thing they inherit. */
+  await boot({ v: 3, folded: false, hidden: [], views: [], actions: [], order: [], orderViews: [], pins: [] });
+  await evaluate(`
+    document.querySelector('.snc-bud').click();
+    const order = ['任务看板', '插件', '插件市场', '上下文洞察', '自动化任务'];
+    const nav = document.querySelector('nav[class*="panelList"]');
+    for (const label of order) {
+      const unit = [...nav.children].find((el) => el.querySelector('button[class*="panelRow"]')?.getAttribute('aria-label') === label);
+      nav.append(unit);
+    }
+    const more = [...nav.children].find((el) => el.classList.contains('wtg9ga_moreAnchor'));
+    nav.prepend(more);
+    document.querySelector('.snc-bud').click();
+  `);
+  await new Promise((r) => setTimeout(r, 120));
   await evaluate(`window.__dispose()`);
-  await new Promise((r) => setTimeout(r, 80));
+  await new Promise((r) => setTimeout(r, 120));
   s = await snapshot();
   check('unloading restores the host list exactly, anchor included', () => {
-    // the drag above is the last word on the order, and it must survive
-    assert.deepEqual(s.order, ['更多', '任务看板', '插件', '插件市场', '上下文洞察', '自动化任务']);
+    assert.equal(s.groupFirst, false, 'no row left inside it');
     assert.equal(s.anchorParent, 'NAV');
     assert.equal(s.anchorInsideNav, true);
     assert.equal(s.editing, undefined, 'no editing flag left on the host list');
-    assert.equal(s.groupFirst, false, 'and no row left inside it');
     assert.equal(s.viewRow.parent, 'an3WzG_tabs', 'the launcher is bare again');
     assert.equal(s.viewRow.isRowChild, true);
     assert.equal(s.viewRow.buttonWidth, 22);

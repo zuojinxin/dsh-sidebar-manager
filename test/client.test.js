@@ -45,9 +45,11 @@ function start(html = navigation(), record) {
   return { dom, doc: dom.window.document, dispose: () => { for (const fn of disposers.reverse()) fn(); } };
 }
 /* v2 adds the two order lists; v1 records are still read and upgraded */
-const rec = (over = {}) => ({ v: 2, folded: false, hidden: [], views: [], actions: [], order: [], orderViews: [], ...over });
+const rec = (over = {}) => ({ v: 3, folded: false, hidden: [], views: [], actions: [], order: [], orderViews: [], pins: [], ...over });
 /* a v1 record, as an older build wrote it */
 const recV1 = (over = {}) => ({ v: 1, folded: false, hidden: [], views: [], ...over });
+/* a v2 record: orders, no pins */
+const recV2 = (over = {}) => ({ v: 2, folded: false, hidden: [], views: [], actions: [], order: [], orderViews: [], ...over });
 const flush = async () => { await Promise.resolve(); await Promise.resolve(); };
 const cssOf = (doc) => doc.querySelector('style[data-plugin-css="dsh-sidebar-manager"]').textContent;
 const rows = (doc) => [...doc.querySelectorAll('nav button[class*="panelRow"]')];
@@ -424,6 +426,546 @@ test('unchecking hides an extension and persists it', async () => {
   assert.equal(after.parentElement.tagName, 'NAV');
   assert.equal(after.dataset.sncHidden, 'true');
   assert.match(cssOf(doc), /\[data-snc-hidden="true"\]\s*\{\s*display:\s*none/);
+  dispose();
+});
+
+/* ---------------------- the host's own pin glyph ----------------------
+   0.2.2 gives every global panel row a trailing pin button whose tooltip reads
+   "从左侧栏取消固定". It is the host's control and the host keeps the only
+   implementation of it -- an array in memory inside dsh-client-ui-sidebar, which
+   its own README lists as a limit. This plugin does NOT re-implement a pin and
+   does NOT fold it into `hidden`: a pin is not a hide (an unpinned launcher moves
+   into the list's "更多" menu, where an outline pin brings it back). It remembers
+   the CHOICE and replays it onto the host's own glyph on the next mount, so the
+   host still owns the consequence.
+
+   The fixture is therefore a miniature host: its pin button, when pressed,
+   really takes the row out of the list -- exactly what the real React handler
+   does. A fixture that only counted clicks could not tell a replay from a fake. */
+const pinEntry = (name) =>
+  `<div class="wtg9ga_panelEntry wtg9ga_panelEntryWide">` +
+  `<button class="wtg9ga_panelRow" aria-label="${name}">` +
+  `<span class="wtg9ga_panelGlyph">★</span><span class="wtg9ga_panelTitle">${name}</span></button>` +
+  `<button type="button" class="wtg9ga_panelUnpin" aria-label="从侧边栏取消固定${name}">📌</button>` +
+  `</div>`;
+const navigationWithPins = (names = ['插件', '自动化任务', '任务看板']) =>
+  `<nav class="wtg9ga_panelList" aria-label="全局面板">${names.map(pinEntry).join('')}${more()}</nav>` +
+  `<div id="workspaces">Workspace and sessions</div>`;
+const entryOf = (doc, name) => rows(doc).find((r) => r.getAttribute('aria-label') === name)
+  ?.closest('[class*="panelEntry"]');
+const pinOf = (doc, name) => entryOf(doc, name)?.querySelector('button[class*="panelUnpin"]');
+/* the miniature host: pressing a row's pin removes that entry from the list, the
+   way the host's own setPinned(false) drops the launcher and its entry appears in
+   the "更多" menu instead */
+const wireHostPins = (doc) => {
+  doc.addEventListener('click', (event) => {
+    const pin = event.target.closest?.('button[class*="panelUnpin"]');
+    if (!pin) return;
+    pin.closest('[class*="panelEntry"]')?.remove();
+  }, true);
+};
+
+test('a pin press is remembered, and replayed onto the host control on reload', async () => {
+  const { doc, dom, dispose } = start(navigationWithPins());
+  wireHostPins(doc);
+  pinOf(doc, '任务看板').click();
+  await flush();
+  /* the host did its own thing: the row left the list */
+  assert.equal(entryOf(doc, '任务看板'), undefined, 'the host moved the row out');
+  /* ...and we recorded the choice, without touching `hidden`: a pin is not a hide */
+  assert.deepEqual(stateOf(dom.window).pins, ['任务看板'], 'the choice is remembered');
+  assert.deepEqual(stateOf(dom.window).hidden, [], 'and it is not recorded as a hide');
+  const saved = stateOf(dom.window);
+  dispose();
+
+  /* a reload: the host has forgotten (every row is back), so the plugin presses
+     that row's own pin again and the host reproduces its own behaviour */
+  const reload = start(navigationWithPins(), saved);
+  wireHostPins(reload.doc);
+  /* the records were read before the fixture's host was wired, so drive the one
+     press the boot already scheduled */
+  assert.deepEqual(stateOf(reload.dom.window).pins, ['任务看板'], 'still remembered after a reload');
+  reload.dispose();
+});
+
+test('the replay really presses the host glyph, not a private flag', async () => {
+  const dom = new JSDOM(`<!doctype html><html><head></head><body></body></html>`, { url: 'http://localhost/' });
+  dom.window.localStorage.setItem(STATE_KEY, JSON.stringify(rec({ pins: ['任务看板'] })));
+  const doc = dom.window.document;
+  doc.body.innerHTML = navigationWithPins();
+  /* the host is wired BEFORE the plugin boots, so the boot replay must land on it */
+  let presses = 0;
+  doc.addEventListener('click', (event) => {
+    const pin = event.target.closest?.('button[class*="panelUnpin"]');
+    if (!pin) return;
+    presses += 1;
+    pin.closest('[class*="panelEntry"]')?.remove();
+  }, true);
+  let bundle;
+  vm.runInNewContext(fs.readFileSync(path, 'utf8'), {
+    window: Object.assign(dom.window, { __ModuleLoader__: { load: (v) => { bundle = v; } } }),
+    document: doc,
+    MutationObserver: dom.window.MutationObserver,
+  });
+  const client = bundle.factory(() => { throw Error('unexpected dependency'); });
+  const disposers = [];
+  client.apply({ effect: (fn) => { disposers.push(fn()); } });
+  /* the replay is queued as a microtask: pressing a pin makes the host redraw
+     the list, and doing that from inside the observer's own walk is re-entrant */
+  await flush();
+  assert.equal(presses, 1, 'exactly one press, for the one remembered key');
+  assert.equal(entryOf(doc, '任务看板'), undefined, 'the host took the row out');
+  assert.equal(entryOf(doc, '插件') !== undefined, true, 'and only that row');
+  /* the replay is not a loop: a repaint must not press again */
+  gear(doc).click();
+  gear(doc).click();
+  await flush();
+  assert.equal(presses, 1, 'a repaint never presses a second time');
+  for (const fn of disposers.reverse()) fn();
+});
+
+test('a build with no pin glyph boots and keeps the record inert', () => {
+  /* the pre-0.2.2 shape: rows with no pin at all. A stored choice must not throw,
+     must not hide anything, and must survive for a build that has pins again. */
+  const { doc, dom, dispose } = start(navigation(), rec({ pins: ['任务看板'] }));
+  assert.ok(shadow(doc), 'the list is still managed');
+  assert.equal(entryOf(doc, '任务看板') !== undefined, true, 'nothing was hidden or removed');
+  assert.equal(rows(doc).find((r) => r.getAttribute('aria-label') === '任务看板').hasAttribute('data-snc-hidden'), false);
+  assert.deepEqual(stateOf(dom.window).pins, ['任务看板'], 'the record is kept for a build that has pins');
+  dispose();
+});
+
+test('a build with no pin glyph never mistakes a removed row for a pin', async () => {
+  /* the same host with no pins: a panel unregistered at runtime must not be
+     remembered as "unpinned", or it would stay pinned forever on a later build
+     that does have pins */
+  const { doc, dom, dispose } = start(navigation());
+  hostNav(doc).querySelector('button[aria-label="任务看板"]').remove();
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [], 'no pin was inferred from a build without pins');
+  dispose();
+});
+
+test('a row removed for a non-pin reason is not recorded as unpinned', async () => {
+  /* the regression this guards: a host that HAS pins, and a panel that leaves
+     because its plugin was disabled. Recording that as a pin would make the row
+     disappear again the moment the plugin came back -- a bug with no user
+     action behind it at all.
+     The gate is per ROW, not per build: only a row that carried a pin glyph can
+     be remembered as unpinned. */
+  const { doc, dom, dispose } = start(navigationWithPins());
+  const nav = hostNav(doc);
+  /* a new row joins the list with no pin glyph of its own (a host that renders
+     one shape for some entries) */
+  nav.insertAdjacentHTML('beforeend',
+    `<div class="wtg9ga_panelEntry"><button class="wtg9ga_panelRow" aria-label="无图钉入口">` +
+    `<span class="wtg9ga_panelTitle">无图钉入口</span></button></div>`);
+  await flush();
+  await flush();
+  /* now it is removed, exactly as a disabled plugin's panel would be */
+  rows(doc).find((r) => r.getAttribute('aria-label') === '无图钉入口').closest('[class*="panelEntry"]').remove();
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [],
+    'a row that never had a pin control is not remembered as unpinned');
+  dispose();
+});
+
+test('several remembered pins all take effect on one boot', async () => {
+  /* The regression this guards: a replay driven by "press every remembered row,
+     once, from a snapshot" can only ever honour the FIRST key, because each
+     press makes the host redraw the whole list and the remaining handles go
+     stale. The replay therefore re-reads the list after every press. */
+  const dom = new JSDOM('<!doctype html><html><head></head><body><div id="host"></div></body></html>', { url: 'http://localhost/' });
+  const doc = dom.window.document;
+  const host = doc.getElementById('host');
+  let live = ['插件', '任务看板', '自动化任务'];
+  const draw = () => { host.innerHTML = navigationWithPins(live); };
+  draw();
+  let presses = 0;
+  /* a host that really redraws on every pin press, the way React does */
+  doc.addEventListener('click', (event) => {
+    const pin = event.target.closest?.('button[class*="panelUnpin"]');
+    if (!pin) return;
+    presses += 1;
+    const label = pin.closest('[class*="panelEntry"]')
+      .querySelector('button[class*="panelRow"]').getAttribute('aria-label');
+    live = live.filter((name) => name !== label);
+    draw();
+  }, true);
+  dom.window.localStorage.setItem(STATE_KEY, JSON.stringify(
+    rec({ pins: ['插件', '任务看板', '自动化任务'] })));
+  let bundle;
+  vm.runInNewContext(fs.readFileSync(path, 'utf8'), {
+    window: Object.assign(dom.window, { __ModuleLoader__: { load: (v) => { bundle = v; } } }),
+    document: doc,
+    MutationObserver: dom.window.MutationObserver,
+  });
+  const client = bundle.factory(() => { throw Error('unexpected dependency'); });
+  const disposers = [];
+  client.apply({ effect: (fn) => { disposers.push(fn()); } });
+  /* each press → host redraw → MutationObserver (its own microtask) → another
+     queued replay, so this settles over several turns, not one */
+  for (let i = 0; i < 15; i += 1) await new Promise((r) => setTimeout(r, 0));
+  assert.equal(presses, 3, 'every remembered key was honoured, not just the first');
+  assert.deepEqual(live, [], 'and the host removed all three');
+  for (const fn of disposers.reverse()) fn();
+});
+
+test('a host that ignores a pin press is not pressed forever', async () => {
+  /* The guard against a spin. The replay presses once per key and marks it
+     settled; a host that keeps the row after the press therefore costs exactly
+     one press, not one per render. The record is KEPT in that case -- it is a
+     correct memory of what the user asked for, and a later build (or a later
+     render) may honour it. Dropping it would lose the choice, and that is a
+     worse failure than a row that stubbornly stays. */
+  const { doc, dom, dispose } = start(navigationWithPins(), rec({ pins: ['任务看板'] }));
+  let presses = 0;
+  /* a pin handler that only counts, never removes: the pathological host */
+  doc.addEventListener('click', (event) => {
+    if (event.target.closest?.('button[class*="panelUnpin"]')) presses += 1;
+  }, true);
+  /* drive renders the way the observer would */
+  const nav = hostNav(doc);
+  for (let i = 0; i < 8; i += 1) {
+    nav.append(doc.createElement('span'));
+    await flush();
+  }
+  assert.equal(presses, 1, `pressed once, not once per render (got ${presses})`);
+  assert.deepEqual(stateOf(dom.window).pins, ['任务看板'], 'the choice is kept for a host that may honour it');
+  dispose();
+});
+
+test('an uninstalled plugin is not remembered as a pin, and does not come back pinned', async () => {
+  /* The reason the recorder is armed by a press instead of reading the DOM: a
+     row leaves the list for three reasons and only one is a pin. Recording an
+     uninstall would make the row vanish again the moment the plugin came back
+     -- a bug with no user action behind it at all. */
+  const { doc, dom, dispose } = start(navigationWithPins());
+  const nav = hostNav(doc);
+  /* 1. the plugin is uninstalled: its row goes */
+  entryOf(doc, '任务看板').remove();
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [], 'an uninstall records nothing');
+  /* 2. the plugin is installed again: the row returns, and must STAY */
+  nav.insertAdjacentHTML('beforeend', pinEntry('任务看板'));
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [], 'and the return records nothing either');
+  assert.ok(entryOf(doc, '任务看板'), 'the row is not pressed out of the list');
+  dispose();
+});
+
+test('a plugin that deregisters its own entry is treated the same way', async () => {
+  /* A plugin may remove its own sidebar entry at runtime (a mode switch, a
+     feature being turned off). That is not the user pinning anything. */
+  const { doc, dom, dispose } = start(navigationWithPins());
+  const nav = hostNav(doc);
+  /* the option is on, then the plugin turns it off */
+  entryOf(doc, '自动化任务').remove();
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [], 'a deregistration is not a pin');
+  /* and back on again */
+  nav.insertAdjacentHTML('beforeend', pinEntry('自动化任务'));
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [], 'nor is the re-registration');
+  assert.ok(entryOf(doc, '自动化任务'), 'the entry is visible when the plugin offers it again');
+  dispose();
+});
+
+test('a pin remembered for an absent launcher survives a reinstall, and cannot strike a namesake', async () => {
+  /* The record is a decision about a LABEL. Two things follow, and the second
+     only became true once a returning row had to be armed by a real re-pin:
+     - a launcher that is gone keeps its record, so a reinstall inherits it;
+     - a DIFFERENT panel later taking the same label is never pressed away on
+       behalf of a decision made about another plugin's entry. */
+  const { doc, dom, dispose } = start(navigationWithPins(['插件', '任务看板']), rec({ pins: ['幽灵面板'] }));
+  assert.deepEqual(stateOf(dom.window).pins, ['幽灵面板'], 'the orphaned choice is kept, not silently dropped');
+  /* a row with that label appears. It is NOT a re-pin (nobody pressed the menu's
+     outline pin), so the record survives -- but nothing presses the new row
+     either: the replay already settled this key before the row existed. */
+  hostNav(doc).insertAdjacentHTML('beforeend', pinEntry('幽灵面板'));
+  await flush();
+  await flush();
+  assert.ok(entryOf(doc, '幽灵面板'), 'the namesake panel is not unpinned by the stale record');
+  assert.deepEqual(stateOf(dom.window).pins, ['幽灵面板'], 'and an unasked-for return does not erase the choice');
+  dispose();
+});
+
+test('two panels sharing one label: a pin takes one row, not both', async () => {
+  /* DSH keys its rows by id and labels them by name, so two plugins may ship the
+     same label. A pin is a per-ROW action, but the record is per LABEL (the
+     host's own "更多" menu lists a label once too). The rule that keeps the two
+     honest: one press is the whole of the choice for that label. Re-counting
+     after the press would happily take the namesake row as well. */
+  const dom = new JSDOM('<!doctype html><html><head></head><body><div id="host"></div></body></html>', { url: 'http://localhost/' });
+  const doc = dom.window.document;
+  const host = doc.getElementById('host');
+  const draw = () => { host.innerHTML = navigationWithPins(['笔记', '笔记', '插件']); };
+  draw();
+  let presses = 0;
+  doc.addEventListener('click', (event) => {
+    const pin = event.target.closest?.('button[class*="panelUnpin"]');
+    if (!pin) return;
+    presses += 1;
+    /* the host removes exactly the row whose pin was pressed */
+    pin.closest('[class*="panelEntry"]').remove();
+  }, true);
+  dom.window.localStorage.setItem(STATE_KEY, JSON.stringify(rec()));
+  let bundle;
+  vm.runInNewContext(fs.readFileSync(path, 'utf8'), {
+    window: Object.assign(dom.window, { __ModuleLoader__: { load: (v) => { bundle = v; } } }),
+    document: doc,
+    MutationObserver: dom.window.MutationObserver,
+  });
+  const client = bundle.factory(() => { throw Error('unexpected dependency'); });
+  const disposers = [];
+  client.apply({ effect: (fn) => { disposers.push(fn()); } });
+  await flush();
+
+  /* the user unpins ONE of the two 笔记 rows */
+  const first = rows(doc).filter((r) => r.getAttribute('aria-label') === '笔记')[0];
+  first.closest('[class*="panelEntry"]').querySelector('button[class*="panelUnpin"]').click();
+  for (let i = 0; i < 12; i += 1) await new Promise((r) => setTimeout(r, 0));
+
+  const left = rows(doc).filter((r) => r.getAttribute('aria-label') === '笔记');
+  assert.equal(presses, 1, 'the record was made by the press, and not re-pressed after it');
+  assert.equal(left.length, 1, 'the namesake row survives');
+  assert.deepEqual(stateOf(dom.window).pins, ['笔记'], 'the label is recorded once');
+  for (const fn of disposers.reverse()) fn();
+});
+
+test('a boot with a shared label unpins one row, not every row with that name', async () => {
+  const dom = new JSDOM('<!doctype html><html><head></head><body><div id="host"></div></body></html>', { url: 'http://localhost/' });
+  const doc = dom.window.document;
+  doc.getElementById('host').innerHTML = navigationWithPins(['笔记', '笔记', '插件']);
+  let presses = 0;
+  doc.addEventListener('click', (event) => {
+    const pin = event.target.closest?.('button[class*="panelUnpin"]');
+    if (!pin) return;
+    presses += 1;
+    pin.closest('[class*="panelEntry"]').remove();
+  }, true);
+  dom.window.localStorage.setItem(STATE_KEY, JSON.stringify(rec({ pins: ['笔记'] })));
+  let bundle;
+  vm.runInNewContext(fs.readFileSync(path, 'utf8'), {
+    window: Object.assign(dom.window, { __ModuleLoader__: { load: (v) => { bundle = v; } } }),
+    document: doc,
+    MutationObserver: dom.window.MutationObserver,
+  });
+  const client = bundle.factory(() => { throw Error('unexpected dependency'); });
+  const disposers = [];
+  client.apply({ effect: (fn) => { disposers.push(fn()); } });
+  for (let i = 0; i < 12; i += 1) await new Promise((r) => setTimeout(r, 0));
+  const left = rows(doc).filter((r) => r.getAttribute('aria-label') === '笔记');
+  assert.equal(presses, 1, `one replay press, got ${presses}`);
+  assert.equal(left.length, 1, 'and the namesake panel is still there');
+  for (const fn of disposers.reverse()) fn();
+});
+
+test('a reinstall keeps the pin record; only a real re-pin clears it', async () => {
+  /* "The row came back" is ambiguous on its own: it happens both when the user
+     presses the outline pin in "更多" and when a plugin is uninstalled and
+     installed again. Only the first is a decision. Without this distinction a
+     reinstall would silently discard the user's choice. */
+  const { doc, dom, dispose } = start(navigationWithPins(['插件', '任务看板']), rec({ pins: ['任务看板'] }));
+  const nav = hostNav(doc);
+  /* 1. the plugin is uninstalled: its row goes; the record must stay */
+  entryOf(doc, '任务看板').remove();
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, ['任务看板'], 'an uninstall does not erase the choice');
+  /* 2. the plugin is installed again: the row is back, the record stays, and
+     nothing presses the returned row away on its own */
+  nav.insertAdjacentHTML('beforeend', pinEntry('任务看板'));
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, ['任务看板'], 'a reinstall is not a re-pin');
+  assert.ok(entryOf(doc, '任务看板'), 'and the returned row is left for the user to decide about');
+  dispose();
+});
+
+test('the "更多" menu outline pin does clear the record', async () => {
+  /* The reverse direction needs the same treatment as the forward one: the
+     record follows the user's press, not whatever the DOM happens to show. */
+  const { doc, dom, dispose } = start(navigationWithPins(['插件']), rec({ pins: ['任务看板'] }));
+  /* the menu row entry-customization renders for an unpinned launcher */
+  doc.body.insertAdjacentHTML('beforeend',
+    `<div class="EWdd3W_sidebarEntry">` +
+    `<button type="button" role="menuitem"><span class="EWdd3W_entryName">` +
+    `<span class="EWdd3W_entryTitle">任务看板</span></span></button>` +
+    `<span class="EWdd3W_pinAnchor"><button type="button" role="menuitem" class="EWdd3W_pinButton"` +
+    ` aria-label="将任务看板固定到侧边栏"></button></span></div>`);
+  doc.querySelector('button[class*="pinButton"]').click();
+  /* the host re-renders the row, which is what a re-pin does */
+  hostNav(doc).insertAdjacentHTML('beforeend', pinEntry('任务看板'));
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [], 'the press cleared the record');
+  assert.ok(entryOf(doc, '任务看板'), 'and the row is back where the user put it');
+  dispose();
+});
+
+/* ---------------------- identity through the slot registry ----------------------
+   The DOM shows a row's LABEL and nothing else: no id attribute ever reaches it.
+   The id lives in the host's slot registry, which the plugin reaches with
+   `ctx.get('slots').entriesOfSlot('sidebar.panellist')` -- the same source the
+   host's own sidebar shell reads. Two plugins may ship the same label; their ids
+   never. These tests boot the plugin WITH a registry, which is what a real
+   session has. */
+const idEntry = (label, glyph = '*') =>
+  `<div class="wtg9ga_panelEntry wtg9ga_panelEntryWide">` +
+  `<button class="wtg9ga_panelRow" aria-label="${label}">` +
+  `<span class="wtg9ga_panelGlyph">${glyph}</span><span class="wtg9ga_panelTitle">${label}</span></button>` +
+  `<button type="button" class="wtg9ga_panelUnpin" aria-label="从侧边栏取消固定${label}">p</button></div>`;
+const idNav = (rows) =>
+  `<nav class="wtg9ga_panelList" aria-label="全局面板">${rows.map((r) => idEntry(r.label, r.glyph)).join('')}</nav>`;
+const makeSlots = (panels) => ({
+  entriesOfSlot: () => panels.map((p) => ({ options: { id: p.id, label: p.label, order: p.order ?? 0 } })),
+  subscribe: () => () => {},
+});
+/* boot with the registry injected, exactly as the host composes ctx */
+function startWithSlots(html, record, panels) {
+  const dom = new JSDOM(`<!doctype html><html><head></head><body>${html}</body></html>`, { url: 'http://localhost/' });
+  if (record !== undefined) dom.window.localStorage.setItem(STATE_KEY, JSON.stringify(record));
+  const doc = dom.window.document;
+  /* the fixture host's own pin behaviour, before the plugin boots */
+  doc.addEventListener('click', (event) => {
+    const pin = event.target.closest?.('button[class*="panelUnpin"]');
+    if (!pin) return;
+    pin.closest('[class*="panelEntry"]')?.remove();
+  }, true);
+  let bundle;
+  vm.runInNewContext(fs.readFileSync(path, 'utf8'), {
+    window: Object.assign(dom.window, { __ModuleLoader__: { load: (v) => { bundle = v; } } }),
+    document: doc,
+    MutationObserver: dom.window.MutationObserver,
+  });
+  const client = bundle.factory(() => { throw Error('unexpected dependency'); });
+  const slots = makeSlots(panels);
+  const disposers = [];
+  client.apply({ effect: (fn) => { disposers.push(fn()); }, slots, get: (name) => (name === 'slots' ? slots : undefined) });
+  return { doc, dom, disposers };
+}
+
+test('two plugins sharing a label get distinct records, keyed by their ids', async () => {
+  const PANELS = [
+    { id: 'plugin-a.notes', label: '笔记' },
+    { id: 'plugin-b.notes', label: '笔记' },
+  ];
+  const run = startWithSlots(idNav([{ label: '笔记', glyph: 'A' }, { label: '笔记', glyph: 'B' }]),
+    rec(), PANELS);
+  await flush();
+  /* unpin the first row: the record must name plugin-a, not the label */
+  [...run.doc.querySelectorAll('[class*="panelEntry"]')][0]
+    .querySelector('button[class*="panelUnpin"]').click();
+  for (let i = 0; i < 12; i += 1) await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(stateOf(run.dom.window).pins, ['plugin-a.notes'],
+    'the record is the panel id, so the namesake is untouched');
+  assert.equal([...run.doc.querySelectorAll('nav button[class*="panelRow"]')]
+    .filter((r) => r.getAttribute('aria-label') === '笔记').length, 1, 'the other 笔记 survived');
+  run.disposers.reverse().forEach((f) => f());
+});
+
+test('a boot replays a remembered id onto the right namesake', async () => {
+  const PANELS = [
+    { id: 'plugin-a.notes', label: '笔记' },
+    { id: 'plugin-b.notes', label: '笔记' },
+  ];
+  const run = startWithSlots(idNav([{ label: '笔记', glyph: 'A' }, { label: '笔记', glyph: 'B' }]),
+    rec({ pins: ['plugin-a.notes'] }), PANELS);
+  for (let i = 0; i < 12; i += 1) await new Promise((r) => setTimeout(r, 0));
+  assert.equal([...run.doc.querySelectorAll('nav button[class*="panelRow"]')]
+    .filter((r) => r.getAttribute('aria-label') === '笔记').length, 1,
+  'only the remembered panel was unpinned');
+  run.disposers.reverse().forEach((f) => f());
+});
+
+test('a host with no registry falls back to label keys, unchanged', async () => {
+  const { doc, dom, dispose } = start(navigationWithPins(['笔记']), rec());
+  await flush();
+  /* press the pin and let the host do what it does: remove that row */
+  pinOf(doc, '笔记').click();
+  entryOf(doc, '笔记').remove();
+  for (let i = 0; i < 10; i += 1) await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(stateOf(dom.window).pins, ['笔记'], 'the label is the key when there is no id to be had');
+  dispose();
+});
+
+test('a redraw never drops a record; a stated moment does', async () => {
+  /* The design rule this pins down: a passing frame is not evidence. Only boot,
+     entering edit mode, or the page becoming visible may conclude that an entry
+     is gone -- because only then is the whole picture on screen. Getting this
+     wrong is how a re-render silently wipes a setting the user made on purpose. */
+  const PANELS = [{ id: 'p1', label: '插件' }, { id: 'p2', label: '任务看板' }];
+  const run = startWithSlots(idNav([{ label: '插件', glyph: '1' }, { label: '任务看板', glyph: '2' }]),
+    rec({ hidden: ['p2'], pins: ['p2'] }), PANELS);
+  for (let i = 0; i < 12; i += 1) await new Promise((r) => setTimeout(r, 0));
+  /* the user's settings survived boot */
+  assert.deepEqual(stateOf(run.dom.window).hidden, ['p2'], 'boot keeps a live record');
+  const nav = run.doc.querySelector('nav');
+  /* now re-render the list several times: nothing may be lost */
+  for (let round = 0; round < 4; round += 1) {
+    nav.innerHTML = '';
+    for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
+    nav.innerHTML = idEntry('插件', '1') + idEntry('任务看板', '2');
+    for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
+  }
+  assert.deepEqual(stateOf(run.dom.window).hidden, ['p2'], 'a redraw is not evidence of removal');
+  /* the plugin goes away, and now a stated moment runs */
+  nav.innerHTML = idEntry('插件', '1');
+  PANELS.splice(1, 1);
+  for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(stateOf(run.dom.window).hidden, ['p2'], 'still not pruned on a redraw alone');
+  run.doc.querySelector('.snc-bud').click();
+  for (let i = 0; i < 8; i += 1) await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(stateOf(run.dom.window).hidden, [], 'entering edit mode is a stated moment');
+  assert.deepEqual(stateOf(run.dom.window).pins, [], 'and it takes the dead pin record too');
+  run.disposers.reverse().forEach((f) => f());
+});
+
+test('a label-keyed record is lifted to its id, not deleted', async () => {
+  /* Records written before ids existed are stored under a LABEL. Without this
+     translation the first boot after an upgrade would see an unknown key, decide
+     the entry is gone, and throw the user's settings away. */
+  const PANELS = [{ id: 'p1', label: '插件' }, { id: 'p2', label: '任务看板' }];
+  const run = startWithSlots(idNav([{ label: '插件', glyph: '1' }, { label: '任务看板', glyph: '2' }]),
+    rec({ hidden: ['任务看板'], pins: ['任务看板'] }), PANELS);
+  for (let i = 0; i < 12; i += 1) await new Promise((r) => setTimeout(r, 0));
+  const state = stateOf(run.dom.window);
+  assert.deepEqual(state.hidden, ['p2'], 'the old label became the panel id');
+  assert.deepEqual(state.pins, ['p2'], 'for the pin list too');
+  run.disposers.reverse().forEach((f) => f());
+});
+
+test('a row that merely disappears is not a pin, but a pressed pin is', async () => {
+  /* The distinction this guards is the whole reason the recorder is armed by
+     the press rather than reading the DOM alone: a row leaves the list for
+     three different reasons and only one of them is a pin. */
+  const { doc, dom, dispose } = start(navigationWithPins());
+  const nav = hostNav(doc);
+  /* 1. removed for a reason that is not a pin (an uninstalled plugin) */
+  entryOf(doc, '任务看板').remove();
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [], 'a bare removal records nothing');
+  /* it comes back: still nothing, and it is not pressed away */
+  nav.insertAdjacentHTML('beforeend', pinEntry('任务看板'));
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, [], 'a returning row is not a pin either');
+  assert.ok(entryOf(doc, '任务看板'), 'and the plugin leaves it in the list');
+  /* 2. now the user actually presses the pin, and the host removes the row */
+  const pin = pinOf(doc, '任务看板');
+  pin.click();
+  entryOf(doc, '任务看板').remove();
+  await flush();
+  await flush();
+  assert.deepEqual(stateOf(dom.window).pins, ['任务看板'], 'a pressed pin IS recorded');
   dispose();
 });
 
@@ -990,7 +1532,7 @@ test('the whole record lives under one versioned key', () => {
   const keys = Object.keys(dom.window.localStorage).filter((k) => k.startsWith('dsh-sidebar-nav-collapse:'));
   assert.deepEqual(keys, [STATE_KEY], 'no per-field keys are written');
   const record = stateOf(dom.window);
-  assert.equal(record.v, 2);
+  assert.equal(record.v, 3);
   assert.equal(record.folded, true);
   assert.deepEqual(record.hidden, ['插件']);
   assert.deepEqual(record.views, []);
@@ -1046,7 +1588,8 @@ test('a record from a newer schema is ignored instead of half-read', () => {
   const { doc, dom, dispose } = start(navigation(), { v: 99, folded: true, hidden: ['插件'], views: [] });
   assert.equal(shadow(doc).dataset.sncFolded, 'false', 'unknown version falls back to defaults');
   assert.equal(rows(doc)[0].hasAttribute('data-snc-hidden'), false);
-  assert.equal(stateOf(dom.window).v, 2, 'the record is rewritten in the current schema');
+  assert.equal(stateOf(dom.window).v, 3, 'the record is rewritten in the current schema');
+  assert.deepEqual(stateOf(dom.window).pins, [], 'and a fresh list arrives with the new field');
   dispose();
 });
 
